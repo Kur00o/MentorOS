@@ -99,4 +99,4 @@ if __name__ == "__main__":
         print(f"\nQ         : {ec.question}")
         print(f"Dimensions: {len(ec.embedding)}")   # should be 768
         print(f"First 3   : {ec.embedding[:3]}")    # sanity check values
-        print(f"Last 3    : {ec.embedding[-3:]}")
+        print(f"Last 3    : {ec.embedding[-3:]}") 
