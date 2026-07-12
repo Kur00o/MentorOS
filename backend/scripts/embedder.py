@@ -40,7 +40,7 @@ def embed_text(text: str) -> list[float]:
     Raises:
         httpx.HTTPError: If the Ollama server is unreachable or returns an error.
     """
-    with httpx.Client(timeout=30.0) as client:
+    with httpx.Client(timeout=120.0) as client:
         response = client.post(
             f"{OLLAMA_BASE_URL}/api/embeddings",
             json={

@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Text, DateTime
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 
-from app.core.database import Base
+from backend.app.core.database import Base
 
 
 class KnowledgeChunk(Base):
