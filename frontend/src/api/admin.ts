@@ -57,9 +57,69 @@ function buildUsers(): PlatformUser[] {
 const USERS = buildUsers();
 
 /** GET /admin/users */
-export function getPlatformUsers(): Promise<PlatformUser[]> {
-  return respond(() => clone(USERS));
+export async function getPlatformUsers(): Promise<PlatformUser[]> {
+  const token = sessionStorage.getItem("token");
+  if (!token) return clone(USERS);
+  try {
+    const res = await fetch(`/api/v1/admin/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch users: ${res.status}`);
+    }
+    const data = await res.json();
+    return data.map((u: any) => ({
+      id: String(u.id),
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      department_code: u.department_code,
+      status: u.status,
+      last_active: u.last_active,
+    }));
+  } catch (err) {
+    console.warn("Backend error fetching users, falling back to mock:", err);
+    return clone(USERS);
+  }
 }
+
+export async function createPlatformUser(payload: {
+  full_name: string;
+  email: string;
+  role: "Student" | "Mentor" | "HOD";
+}): Promise<{ message: string; user_id: number }> {
+  const token = sessionStorage.getItem("token");
+  if (!token) {
+    // Mock mode
+    const newId = `usr-mock-${Date.now()}`;
+    const newMockUser: PlatformUser = {
+      id: newId,
+      name: payload.full_name,
+      email: payload.email,
+      role: payload.role.toLowerCase() as Role,
+      department_code: "CSE",
+      status: "active",
+      last_active: new Date().toISOString(),
+    };
+    USERS.push(newMockUser);
+    return { message: "User created successfully (Mock)", user_id: 9999 };
+  }
+
+  const res = await fetch(`/api/v1/admin/users`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.detail || `Failed to create user (HTTP ${res.status}).`);
+  }
+  return res.json();
+}
+
 
 export interface ComplianceExport {
   filename: string;

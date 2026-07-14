@@ -20,7 +20,7 @@ const ROLE_BLURB: Record<Role, string> = {
 };
 
 /** Collapsed demo role switcher for the sidebar footer */
-function DemoRoleSwitcher({ role }: { role: Role }) {
+function DemoRoleSwitcher({ role: _role }: { role: Role }) {
   const navigate = useNavigate();
   const { activeRole, setActiveRole } = useAppStore();
   const [open, setOpen] = useState(false);

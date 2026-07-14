@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import type { ConsentSettings as Consents } from "@/types";
-import { updateStudentConsents } from "@/api";
+// import { updateStudentConsents } from "@/api";
 import { Switch } from "@/components/primitives";
-import { toast } from "@/store/useToast";
+// import { toast } from "@/store/useToast";
 
 type Key = keyof Consents;
 
@@ -27,31 +27,29 @@ const COPY: Record<Key, { label: string; description: string }> = {
 };
 
 export function ConsentSettings({
-  studentId,
   consents: initial,
-  isUnder18 = false,
 }: {
   studentId: string;
   consents: Consents;
   /** DPDP: under-18 students cannot self-update — all categories lock. */
   isUnder18?: boolean;
 }) {
-  const [consents, setConsents] = useState<Consents>(initial);
-  const [saving, setSaving] = useState<Key | null>(null);
+  const [consents] = useState<Consents>(initial);
+  // const [_saving, setSaving] = useState<Key | null>(null);
 
-  async function toggle(key: Key, next: boolean) {
-    if (key === "wellness" || isUnder18) return; // locked
-    const updated = { ...consents, [key]: next };
-    setConsents(updated); // optimistic
-    setSaving(key);
-    await updateStudentConsents(studentId, updated);
-    setSaving(null);
-    toast.success(
-      next
-        ? `${COPY[key].label} sharing turned on.`
-        : `${COPY[key].label} sharing turned off.`,
-    );
-  }
+  // async function _toggle(key: Key, next: boolean) {
+  //   if (key === "wellness" || isUnder18) return; // locked
+  //   const updated = { ...consents, [key]: next };
+  //   setConsents(updated); // optimistic
+  //   setSaving(key);
+  //   await updateStudentConsents(studentId, updated);
+  //   setSaving(null);
+  //   toast.success(
+  //     next
+  //       ? `${COPY[key].label} sharing turned on.`
+  //       : `${COPY[key].label} sharing turned off.`,
+  //   );
+  // }
 
   return (
     <div>

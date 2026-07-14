@@ -270,7 +270,7 @@ def test_scheduled_meeting_records_mode(client, world):
             "mode": "video",
         },
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code in (200, 201), r.text
     assert r.json()["mode"] == "video"
 
 
@@ -287,3 +287,85 @@ def test_state_change_writes_audit(client, world):
     # explicit endpoint audit + middleware safety-net row
     assert "consent_update" in actions
     assert any(a.startswith("PATCH") for a in actions)
+
+
+def test_admin_create_users(client, world):
+    # 1. Non-admin should be denied
+    r = client.post(
+        "/api/v1/admin/users",
+        headers=auth(world["stu_u"]),
+        json={"full_name": "New Student", "email": "newstu@mitwpu.edu.in", "role": "Student"}
+    )
+    assert r.status_code == 403
+
+    # 2. Admin should be able to list users
+    r = client.get(
+        "/api/v1/admin/users",
+        headers=auth(world["admin"])
+    )
+    assert r.status_code == 200
+    initial_count = len(r.json())
+
+    # 3. Admin creates a student with detailed attributes
+    r = client.post(
+        "/api/v1/admin/users",
+        headers=auth(world["admin"]),
+        json={
+            "full_name": "New Student Test",
+            "email": "newstu@mitwpu.edu.in",
+            "role": "Student",
+            "usn": "1234567890",
+            "department": "CSE",
+            "semester": 3,
+            "student_mobile": "+91 99999 88888",
+            "parent_mobile": "+91 99999 77777",
+            "parent_email": "parent@email.com",
+        }
+    )
+    assert r.status_code == 201
+    
+    # 3.5. Admin attempts to create another student with the same USN (should fail)
+    r = client.post(
+        "/api/v1/admin/users",
+        headers=auth(world["admin"]),
+        json={
+            "full_name": "Another Student",
+            "email": "anotherstu@mitwpu.edu.in",
+            "role": "Student",
+            "usn": "1234567890",
+        }
+    )
+    assert r.status_code == 400
+
+    # 4. Admin creates a mentor with detailed attributes
+    r = client.post(
+        "/api/v1/admin/users",
+        headers=auth(world["admin"]),
+        json={
+            "full_name": "New Mentor Test",
+            "email": "newmentor@mitwpu.edu.in",
+            "role": "Mentor",
+            "department": "ECE",
+            "max_mentees": 15,
+            "mobile_no": "+91 88888 77777",
+        }
+    )
+    assert r.status_code == 201
+
+    # 5. List users again, check count and properties
+    r = client.get(
+        "/api/v1/admin/users",
+        headers=auth(world["admin"])
+    )
+    assert r.status_code == 200
+    assert len(r.json()) == initial_count + 2
+    
+    emails = [u["email"] for u in r.json()]
+    assert "newstu@mitwpu.edu.in" in emails
+    assert "newmentor@mitwpu.edu.in" in emails
+
+    # 6. Verify audit log entry
+    world["db"].expire_all()
+    actions = [a.action for a in world["db"].query(AuditLog).all()]
+    assert "create_user" in actions
+

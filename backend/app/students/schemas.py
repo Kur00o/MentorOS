@@ -50,9 +50,13 @@ class ConsentUpdate(BaseModel):
     consented: bool
 
 
+from backend.app.auth.schemas import UserResponse
+
+
 class StudentResponse(StudentBase):
     id: int
     user_id: int
+    user: Optional[UserResponse] = None
 
     class Config:
         from_attributes = True

@@ -6,12 +6,14 @@ import { useAppStore } from "@/store/useAppStore";
 import { supabase } from "@/lib/supabase";
 import { loginToBackend } from "@/lib/auth";
 import { Toaster } from "@/components/Toaster";
+import { getMe } from "@/api";
 
 // Route-level code splitting — the landing page no longer pulls in Recharts
 // (HOD) or the heavier dashboard code until those routes are visited.
 const Landing = lazy(() => import("@/pages/auth/Landing"));
 const Login = lazy(() => import("@/pages/auth/Login"));
 const Callback = lazy(() => import("@/pages/auth/Callback"));
+const AdminCreateUsers = lazy(() => import("@/pages/admin/AdminCreateUsers"));
 const StudentDashboard = lazy(() => import("@/pages/student/StudentDashboard"));
 const AttendancePage = lazy(() => import("@/pages/student/AttendancePage"));
 const MeetingsPage = lazy(() => import("@/pages/student/MeetingsPage"));
@@ -41,7 +43,18 @@ export default function App() {
 
         const storedToken = sessionStorage.getItem("token");
         if (storedToken) {
-          setSession(null, { email: "signed-in" } as any);
+          try {
+            const me = await getMe();
+            setSession(null, {
+              id: String(me.id),
+              email: me.email,
+              user_metadata: { full_name: me.full_name },
+              role: me.role.toLowerCase(),
+            } as any);
+          } catch (err) {
+            console.error("Failed to restore session me:", err);
+            setSession(null, { email: "signed-in" } as any);
+          }
         } else if (session) {
           setSession(session, session.user);
           const token = sessionStorage.getItem("token");
@@ -109,6 +122,7 @@ export default function App() {
             <Route path="mentor" element={<MentorDashboard />} />
             <Route path="hod" element={<HODDashboard />} />
             <Route path="admin" element={<AdminDashboard />} />
+            <Route path="admin/create-users" element={<AdminCreateUsers />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

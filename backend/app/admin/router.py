@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.audit import write_audit
+from backend.app.core.security import get_password_hash
 from backend.app.auth.router import get_current_user, require_role
-from backend.app.models.user import User
+from backend.app.models.user import User, UserRole
 from backend.app.models.student import Student
+from backend.app.models.mentor import Mentor
 from backend.app.models.meeting import Meeting
 from backend.app.models.audit import AuditLog
 from backend.app.models.academic import (
@@ -544,3 +546,177 @@ def import_sgpa(
     write_audit(db, current_user.id, "import_sgpa", "system", None,
                 details={"rows": len(rows), "success": success, "errors": len(errors)})
     return {"row_count": len(rows), "success_count": success, "error_log": errors}
+
+
+def to_frontend_role(role: UserRole) -> str:
+    if role == UserRole.STUDENT:
+        return "student"
+    elif role == UserRole.MENTOR:
+        return "mentor"
+    elif role == UserRole.HOD:
+        return "hod"
+    elif role == UserRole.ADMIN:
+        return "admin"
+    return str(role).lower()
+
+
+@router.get("/users", response_model=list[schemas.AdminUserResponse])
+def list_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("Admin"))
+) -> Any:
+    """
+    List all users in the system (Admin only).
+    """
+    users = db.query(User).all()
+    res = []
+    for u in users:
+        # Determine department code
+        dept = "—"
+        if u.role == UserRole.STUDENT and u.student_profile:
+            dept = u.student_profile.department
+        elif u.role == UserRole.MENTOR and u.mentor_profile:
+            dept = u.mentor_profile.department
+        elif u.role == UserRole.HOD:
+            dept = "CSE"
+        
+        # Determine status
+        if not u.is_active:
+            status_str = "suspended"
+        elif not u.hashed_password and not u.supabase_user_id:
+            status_str = "invited"
+        else:
+            status_str = "active"
+            
+        res.append({
+            "id": u.id,
+            "name": u.full_name,
+            "email": u.email,
+            "role": to_frontend_role(u.role),
+            "department_code": dept or "—",
+            "status": status_str,
+            "last_active": datetime.now(timezone.utc)
+        })
+    return res
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+def create_user_by_admin(
+    payload: schemas.UserCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("Admin")),
+) -> Any:
+    """
+    Create a new user with a hashed password (default: 'test123') and the selected role.
+    """
+    normalized_email = payload.email.strip().lower()
+    if not normalized_email.endswith("@mitwpu.edu.in"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only @mitwpu.edu.in email addresses are permitted."
+        )
+    
+    # Check if user already exists
+    existing_user = db.query(User).filter(func.lower(User.email) == normalized_email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email already exists."
+        )
+        
+    # Convert string role to UserRole enum
+    try:
+        role_enum = UserRole(payload.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role: {payload.role}"
+        )
+
+    # Check USN duplicate and format before creating the user
+    if role_enum == UserRole.STUDENT:
+        if not payload.usn or not payload.usn.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PRN Number is required for students."
+            )
+        usn_val = payload.usn.strip()
+        if not (len(usn_val) == 10 and usn_val.isdigit()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PRN Number must be exactly a 10-digit number."
+            )
+        duplicate = db.query(Student).filter(Student.usn == usn_val).first()
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"PRN Number '{usn_val}' is already assigned to another student."
+            )
+        
+    # Create user with default hashed password
+    hashed_password = get_password_hash("test123")
+    new_user = User(
+        email=normalized_email,
+        full_name=payload.full_name.strip(),
+        hashed_password=hashed_password,
+        role=role_enum,
+        is_active=True
+    )
+    db.add(new_user)
+    db.flush()  # to get new_user.id
+    
+    # Add profile records for Student/Mentor
+    if role_enum == UserRole.STUDENT:
+        usn_val = payload.usn.strip()
+            
+        student = Student(
+            user_id=new_user.id,
+            usn=usn_val,
+            department=payload.department.strip() if (payload.department and payload.department.strip()) else "CSE",
+            semester=payload.semester if payload.semester is not None else 1,
+            student_mobile=payload.student_mobile.strip() if payload.student_mobile else None,
+            parent_mobile=payload.parent_mobile.strip() if payload.parent_mobile else None,
+            parent_email=payload.parent_email.strip() if payload.parent_email else None,
+            attendance_rate=100.0,
+            cgpa=0.0,
+            success_score=100.0,
+            risk_status="Green",
+            consent_given=True,
+            is_under_18=False,
+        )
+        db.add(student)
+        
+    elif role_enum == UserRole.MENTOR:
+        mentor = Mentor(
+            user_id=new_user.id,
+            department=payload.department.strip() if (payload.department and payload.department.strip()) else "CSE",
+            max_mentees=payload.max_mentees if payload.max_mentees is not None else 20,
+            mobile_no=payload.mobile_no.strip() if payload.mobile_no else None,
+        )
+        db.add(mentor)
+        
+    try:
+        db.commit()
+        db.refresh(new_user)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not create user: {exc}"
+        )
+        
+    # Write audit log
+    audit_details = {"role": new_user.role, "email": new_user.email}
+    if payload.department:
+        audit_details["department"] = payload.department.strip()
+    write_audit(
+        db,
+        current_user.id,
+        "create_user",
+        "user",
+        new_user.id,
+        details=audit_details
+    )
+    
+    return {"message": "User created successfully", "user_id": new_user.id}
+

@@ -199,7 +199,7 @@ export default function ProfilePage() {
           <Field label="Email" value={s.email} />
           <div className="flex items-center gap-2">
             <BookOpen size={14} className="shrink-0 text-ink-soft" />
-            <Field label="USN" value={s.roll_no} />
+            <Field label="PRN Number" value={s.roll_no} />
           </div>
           <div className="flex items-center gap-2">
             <BookOpen size={14} className="shrink-0 text-ink-soft" />
@@ -259,7 +259,7 @@ export default function ProfilePage() {
       </GlassCard>
 
       <p className="text-caption text-ink-soft">
-        Name, USN, department, and semester are set by the institution and cannot be edited here.
+        Name, PRN Number, department, and semester are set by the institution and cannot be edited here.
         Contact your admin to request changes.
       </p>
     </div>

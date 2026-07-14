@@ -2,11 +2,14 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Chrome, Eye, EyeOff, KeyRound, Lock, LogIn, Mail, XCircle } from "lucide-react";
-import { Button, Input } from "@/components/primitives";
+import { Button } from "@/components/primitives";
 import { Brand } from "@/components/Brand";
 import { Background } from "@/components/layout/Background";
 import { toast } from "@/store/useToast";
 import { signInWithGoogle } from "@/lib/auth";
+import { getMe, ROLE_HOME } from "@/api";
+import { useAppStore } from "@/store/useAppStore";
+import type { Role } from "@/types";
 
 const ALLOWED_DOMAIN = "@mitwpu.edu.in";
 
@@ -14,6 +17,7 @@ type Screen = "login" | "set-password";
 
 export default function Login() {
   const navigate = useNavigate();
+  const setSession = useAppStore((s) => s.setSession);
   const [screen, setScreen] = useState<Screen>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -66,8 +70,21 @@ export default function Login() {
 
       if (data?.access_token) {
         sessionStorage.setItem("token", data.access_token);
-        toast.success("Welcome back!");
-        navigate("/app/student");
+        try {
+          const me = await getMe();
+          setSession(null, {
+            id: String(me.id),
+            email: me.email,
+            user_metadata: { full_name: me.full_name },
+            role: me.role.toLowerCase(),
+          } as any);
+          toast.success("Welcome back!");
+          navigate(ROLE_HOME[me.role.toLowerCase() as Role] || "/app/student");
+        } catch (err) {
+          console.error("Failed to fetch user me on login:", err);
+          toast.success("Welcome back!");
+          navigate("/app/student");
+        }
       }
     } catch {
       setError("Something went wrong. Try again.");

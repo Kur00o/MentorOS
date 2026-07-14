@@ -43,6 +43,8 @@ export default function AdminDashboard() {
         <StatTile label="Pending invites" value={pending} sublabel="Awaiting first sign-in" />
       </div>
 
+
+
       <UserTable users={all} />
 
       {/* Data import */}

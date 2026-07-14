@@ -71,3 +71,15 @@ export const ROLE_TITLE: Record<Role, string> = {
   hod: "HOD",
   admin: "Admin",
 };
+
+export async function getMe(): Promise<any> {
+  const token = sessionStorage.getItem("token");
+  if (!token) return null;
+  const res = await fetch(`/api/v1/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to get current user details (HTTP ${res.status}).`);
+  }
+  return res.json();
+}

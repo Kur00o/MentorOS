@@ -45,6 +45,7 @@ export const NAV: Record<Role, NavItem[]> = {
   ],
   admin: [
     { label: "Users", icon: Users, to: "/app/admin", anchor: "users" },
+    { label: "Create users", icon: Users2, to: "/app/admin/create-users" },
     { label: "Data import", icon: Upload, to: "/app/admin", anchor: "import" },
     { label: "Compliance exports", icon: FileDown, to: "/app/admin", anchor: "exports" },
   ],

@@ -28,11 +28,7 @@ function attendanceColor(pct: number) {
   return "text-signal-coral";
 }
 
-function attendanceHex(pct: number) {
-  if (pct >= 75) return "var(--color-signal-green)";
-  if (pct >= 60) return "var(--color-signal-amber)";
-  return "var(--color-signal-coral)";
-}
+
 
 function SubjectCard({ subject }: { subject: { code: string; name: string; internal_marks: number; max_internal: number } }) {
   return (
