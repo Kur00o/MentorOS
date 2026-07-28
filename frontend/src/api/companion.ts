@@ -13,10 +13,6 @@
  * defined, and map the tool_use/tool_result blocks onto `CompanionMessage`.
  */
 import type { ScoreBreakdown } from "@/types";
-import { DB } from "@/mock/data";
-import { FAQ, COMPANION_FALLBACK } from "@/mock/companion";
-import { scheduleMeeting } from "./mentors";
-import { clone } from "./client";
 
 export type CompanionRole = "user" | "assistant";
 
@@ -37,6 +33,12 @@ export interface MeetingToolResult {
 
 export type ToolResult = ScoreToolResult | MeetingToolResult;
 
+export interface BackendSource {
+  question: string;
+  source_file: string;
+  similarity: number;
+}
+
 export interface CompanionMessage {
   id: string;
   role: CompanionRole;
@@ -44,11 +46,12 @@ export interface CompanionMessage {
   tool?: ToolResult;
   /** Quick-reply chips. */
   suggestions?: string[];
+  sources?: BackendSource[];
   createdAt: string;
 }
 
 export interface CompanionContext {
-  studentId: string;
+  studentId?: string;
 }
 
 let seq = 0;
@@ -64,95 +67,35 @@ export function userMessage(text: string): CompanionMessage {
   return { id: newId(), role: "user", text, createdAt: new Date().toISOString() };
 }
 
-/* --------------------------- intent detection --------------------------- */
-
-function wantsScore(t: string): boolean {
-  return /(my|current).*(score|standing|progress)|show.*score|what.*my score|how am i doing|get_my_score/.test(
-    t,
-  );
-}
-
-function wantsSchedule(t: string): boolean {
-  return /(schedule|book|set ?up|arrange).*(meeting|slot|appointment|mentor)|schedule_meeting|^book a meeting/.test(
-    t,
-  );
-}
-
-function scoreFaqMatch(t: string): { id: string; score: number } | undefined {
-  let best: { id: string; score: number } | undefined;
-  for (const entry of FAQ) {
-    let hits = 0;
-    for (const kw of entry.keywords) {
-      if (t.includes(kw)) hits += kw.length > 4 ? 2 : 1;
-    }
-    if (hits > 0 && (!best || hits > best.score)) best = { id: entry.id, score: hits };
-  }
-  return best;
-}
-
 /* --------------------------- the swap point --------------------------- */
 
-export function sendCompanionMessage(
+export async function sendCompanionMessage(
   text: string,
-  ctx: CompanionContext,
+  _ctx: CompanionContext,
 ): Promise<CompanionMessage> {
-  const t = text.toLowerCase().trim();
-
-  // Variable think-time makes the typing indicator feel real.
-  const latency = 650 + Math.random() * 700;
-
-  return new Promise((resolve) => {
-    window.setTimeout(() => resolve(route(t, ctx)), latency);
-  });
-}
-
-function route(t: string, ctx: CompanionContext): CompanionMessage {
-  const student = DB.students.find((s) => s.id === ctx.studentId);
-
-  // Tool call: get_my_score
-  if (wantsScore(t) && student) {
-    return reply({
-      text: `Here's where you stand right now, ${student.name.split(" ")[0]}. Each bar is the raw component before its weight is applied.`,
-      tool: { tool: "get_my_score", studentName: student.name, breakdown: clone(student.score) },
-      suggestions: ["How do I improve it?", "What lowers my score?"],
-    });
-  }
-
-  // Tool call: schedule_meeting (creates a real entry in the mock store)
-  if (wantsSchedule(t) && student) {
-    const when = new Date();
-    when.setDate(when.getDate() + 3);
-    when.setHours(11, 0, 0, 0);
-    const mentor = DB.mentors.find((m) => m.id === student.mentor_id);
-    // Reuse the same API a mentor would — the booking really lands on the roster.
-    void scheduleMeeting({
-      student_id: student.id,
-      mentor_id: student.mentor_id,
-      scheduled_for: when.toISOString(),
-      mode: "video",
-    });
-    return reply({
-      text: "Done — I've put a request on your mentor's roster. They'll confirm the final time.",
-      tool: {
-        tool: "schedule_meeting",
-        scheduled_for: when.toISOString(),
-        mode: "video",
-        mentorName: mentor?.name ?? "your mentor",
+  try {
+    const response = await fetch("http://localhost:8000/api/v1/companion/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
-      suggestions: ["Show my score", "What should I prepare?"],
+      body: JSON.stringify({ message: text }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    return reply({
+      text: data.answer,
+      sources: data.sources,
+    });
+  } catch (error) {
+    console.error("Companion API error:", error);
+    return reply({
+      text: "I'm having trouble connecting right now. Please try again in a moment.",
     });
   }
-
-  // FAQ keyword match
-  const match = scoreFaqMatch(t);
-  if (match) {
-    const entry = FAQ.find((f) => f.id === match.id)!;
-    return reply({ text: entry.answer, suggestions: entry.suggestions });
-  }
-
-  // Fallback
-  return reply({
-    text: COMPANION_FALLBACK,
-    suggestions: ["How does my score work?", "Show my score", "Book a meeting"],
-  });
 }
