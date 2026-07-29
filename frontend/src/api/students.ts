@@ -18,6 +18,12 @@ export async function getMyStudentProfile(): Promise<Student | null> {
   if (!resp.ok) return null;
 
   const data = await resp.json();
+  const records = data.attendance_records ?? [];
+  const totalClasses = records.reduce((sum: number, r: any) => sum + (r.total_classes ?? 0), 0);
+  const totalAttended = records.reduce((sum: number, r: any) => sum + (r.attended_classes ?? 0), 0);
+  const realAttendancePct = totalClasses > 0 ? (totalAttended / totalClasses) * 100 : (data.attendance_rate ?? 0);
+  const attendanceComp = realAttendancePct >= 80 ? 100 : realAttendancePct;
+
   // Adapt backend shape → frontend Student type
   return {
     id: String(data.id),
@@ -29,8 +35,15 @@ export async function getMyStudentProfile(): Promise<Student | null> {
     semester: data.semester,
     avatar_hue: 214,
     signals: {
-      attendance_pct: data.attendance_rate ?? 0,
-      subjects: [],
+      attendance_pct: realAttendancePct,
+      subjects: records.map((rec: any) => ({
+        code: rec.subject.subject_code,
+        name: rec.subject.subject_name,
+        internal_marks: 30, // default placeholder
+        max_internal: 40,
+        total_classes: rec.total_classes,
+        attended_classes: rec.attended_classes,
+      })),
       active_backlogs: 0,
       logins_30d: 0,
       assignment_submission_rate: 1,
@@ -40,8 +53,9 @@ export async function getMyStudentProfile(): Promise<Student | null> {
         certifications_added: false,
       },
     },
+
     score: {
-      attendance_component: data.attendance_rate ?? 0,
+      attendance_component: attendanceComp,
       academic_component: data.cgpa ? (data.cgpa / 10) * 100 : 0,
       engagement_component: 0,
       placement_component: 0,

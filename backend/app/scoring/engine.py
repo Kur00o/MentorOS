@@ -63,7 +63,8 @@ class ScoringEngine:
             (r.attended_classes / r.total_classes * 100) if r.total_classes > 0 else 0
             for r in records
         ]
-        return sum(percentages) / len(percentages)
+        avg_pct = sum(percentages) / len(percentages)
+        return 100.0 if avg_pct >= 80.0 else avg_pct
 
     def academic_component(self, student_id: int) -> Optional[float]:
         """min(SGPA × 10, 100); None if SGPA not available. SGPA, not CGPA."""

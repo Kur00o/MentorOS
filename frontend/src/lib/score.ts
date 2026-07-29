@@ -37,7 +37,8 @@ export type ComponentKey = keyof typeof COMPONENT_WEIGHTS;
 
 /** attendance_component = attendance %, directly. */
 export function attendanceComponent(signals: StudentSignals): number {
-  return clamp(signals.attendance_pct);
+  const pct = signals.attendance_pct;
+  return pct >= 80 ? 100 : clamp(pct);
 }
 
 /**

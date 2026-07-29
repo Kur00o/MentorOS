@@ -68,8 +68,10 @@ export default function StudentDashboard() {
   const lowest = COMPONENT_META.reduce((min, m) =>
     componentValue(s.score, m.key) < componentValue(s.score, min.key) ? m : min,
   );
-  const attendancePct = s.signals.attendance_pct;
   const subjects = s.signals.subjects;
+  const totalClasses = subjects.reduce((sum, r) => sum + (r.total_classes ?? 0), 0);
+  const totalAttended = subjects.reduce((sum, r) => sum + (r.attended_classes ?? 0), 0);
+  const attendancePct = totalClasses > 0 ? (totalAttended / totalClasses) * 100 : s.signals.attendance_pct;
   const pictureUrl = (s as any).profile_picture_url as string | null;
 
   return (

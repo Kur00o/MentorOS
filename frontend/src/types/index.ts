@@ -47,7 +47,10 @@ export interface SubjectMark {
   name: string;
   internal_marks: number;
   max_internal: number;
+  total_classes?: number;
+  attended_classes?: number;
 }
+
 
 export interface PlacementProfile {
   resume_uploaded: boolean;

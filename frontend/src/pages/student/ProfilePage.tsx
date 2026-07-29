@@ -197,18 +197,9 @@ export default function ProfilePage() {
         <div className="grid min-w-0 flex-1 gap-x-8 gap-y-4 sm:grid-cols-2">
           <Field label="Full name" value={s.name} />
           <Field label="Email" value={s.email} />
-          <div className="flex items-center gap-2">
-            <BookOpen size={14} className="shrink-0 text-ink-soft" />
-            <Field label="PRN Number" value={s.roll_no} />
-          </div>
-          <div className="flex items-center gap-2">
-            <BookOpen size={14} className="shrink-0 text-ink-soft" />
-            <Field label="Department" value={s.department_id} />
-          </div>
-          <div className="flex items-center gap-2">
-            <CalendarDays size={14} className="shrink-0 text-ink-soft" />
-            <Field label="Year / Semester" value={`${semesterToYear(s.semester)} · Sem ${s.semester}`} />
-          </div>
+          <Field label="PRN Number" value={s.roll_no} />
+          <Field label="Department" value={s.department_id} />
+          <Field label="Year / Semester" value={`${semesterToYear(s.semester)} · Sem ${s.semester}`} />
         </div>
       </GlassCard>
 

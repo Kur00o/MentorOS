@@ -53,10 +53,34 @@ class ConsentUpdate(BaseModel):
 from backend.app.auth.schemas import UserResponse
 
 
+class SubjectResponse(BaseModel):
+    subject_code: str
+    subject_name: str
+    credits: int
+    department: str
+
+    class Config:
+        from_attributes = True
+
+
+class AttendanceRecordResponse(BaseModel):
+    id: int
+    subject_id: int
+    total_classes: int
+    attended_classes: int
+    period: str
+    subject: SubjectResponse
+
+    class Config:
+        from_attributes = True
+
+
 class StudentResponse(StudentBase):
     id: int
     user_id: int
     user: Optional[UserResponse] = None
+    attendance_records: list[AttendanceRecordResponse] = []
 
     class Config:
         from_attributes = True
+

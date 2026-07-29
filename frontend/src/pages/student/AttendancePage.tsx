@@ -57,15 +57,11 @@ export default function AttendancePage() {
   const s = student.data;
   const subjects = s.signals.subjects;
 
-  // Build rows — derive total/attended from internal_marks ratio as a proxy
-  // until the backend provides per-subject attendance directly.
-  // When real data arrives, swap these fields from the API response.
   const rows: SubjectRow[] = subjects.map((sub) => {
-    // Use overall attendance_pct as fallback per subject until subject-level data exists
-    const pct = s.signals.attendance_pct;
-    // Assume a typical 60-class semester, scale by pct
-    const total_classes = 60;
-    const attended = Math.round((pct / 100) * total_classes);
+    const hasRealAttendance = typeof sub.total_classes === "number" && typeof sub.attended_classes === "number";
+    const total_classes = hasRealAttendance ? sub.total_classes! : 60;
+    const attended = hasRealAttendance ? sub.attended_classes! : Math.round((s.signals.attendance_pct / 100) * total_classes);
+    const pct = hasRealAttendance ? (total_classes > 0 ? (attended / total_classes) * 100 : 0) : s.signals.attendance_pct;
     return {
       code: sub.code,
       name: sub.name,
@@ -75,9 +71,9 @@ export default function AttendancePage() {
     };
   });
 
-  const overallPct = s.signals.attendance_pct;
   const totalClasses = rows.reduce((s, r) => s + r.total_classes, 0);
   const totalAttended = rows.reduce((s, r) => s + r.attended, 0);
+  const overallPct = totalClasses > 0 ? (totalAttended / totalClasses) * 100 : s.signals.attendance_pct;
 
   return (
     <div className="flex flex-col gap-6">
@@ -93,8 +89,8 @@ export default function AttendancePage() {
               <tr className="border-b border-ink/8 bg-ink/[0.02]">
                 <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Subject</th>
                 <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Subject ID</th>
-                <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Total Classes</th>
                 <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Attended</th>
+                <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Total Classes</th>
                 <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Attendance</th>
                 <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide text-ink-soft">Status</th>
               </tr>
@@ -105,10 +101,10 @@ export default function AttendancePage() {
                   <td className="px-5 py-3.5 text-body font-medium text-ink">{row.name}</td>
                   <td className="px-5 py-3.5 font-mono text-caption text-ink-soft">{row.code}</td>
                   <td className="px-5 py-3.5 text-right font-mono tnum text-caption text-ink">
-                    {row.total_classes}
+                    {row.attended}
                   </td>
                   <td className="px-5 py-3.5 text-right font-mono tnum text-caption text-ink">
-                    {row.attended}
+                    {row.total_classes}
                   </td>
                   <td className="px-5 py-3.5 text-right">
                     <span className={`font-mono tnum text-caption font-semibold ${pctColor(row.pct)}`}>
@@ -128,10 +124,10 @@ export default function AttendancePage() {
                   Total
                 </td>
                 <td className="px-5 py-3.5 text-right font-mono tnum text-caption font-semibold text-ink">
-                  {totalClasses}
+                  {totalAttended}
                 </td>
                 <td className="px-5 py-3.5 text-right font-mono tnum text-caption font-semibold text-ink">
-                  {totalAttended}
+                  {totalClasses}
                 </td>
                 <td className="px-5 py-3.5 text-right">
                   <span className={`font-mono tnum text-caption font-bold ${pctColor(overallPct)}`}>

@@ -129,6 +129,7 @@ async def upload_profile_picture(
 
 
 
+@router.put("/me/consent", response_model=schemas.StudentResponse)
 def update_student_consent(
     consent_update: schemas.StudentConsentUpdate,
     db: Session = Depends(get_db),
