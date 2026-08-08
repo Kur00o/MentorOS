@@ -46,7 +46,7 @@ def run_allocation_endpoint(
 @router.post("/reset", response_model=AllocationResetResponse)
 def reset_allocation_endpoint(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Admin")),
+    current_user: User = Depends(require_role("HOD", "Admin")),
 ) -> AllocationResetResponse:
     """Clear all allocation records and reset student mentor assignments."""
     try:

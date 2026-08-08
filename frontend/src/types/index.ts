@@ -186,7 +186,6 @@ export interface AllocationDepartmentRunStats {
 export interface AllocationRunResponse {
   allocated: number;
   skipped: number;
-  skipped_students: number[];
   by_department: Record<string, AllocationDepartmentRunStats>;
 }
 
