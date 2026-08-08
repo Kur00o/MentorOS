@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   GitBranch,
@@ -17,10 +17,11 @@ import {
 import type {
   AllocationMentorWorkload,
   AllocationPendingStudent,
+  AllocationResetResponse,
   AllocationRunResponse,
   AllocationStatistics,
 } from "@/types";
-import { Button, EmptyState, GlassCard, LoadingState, Badge } from "@/components/primitives";
+import { Button, EmptyState, GlassCard, LoadingState, Badge, Modal } from "@/components/primitives";
 import { StatTile } from "@/components/StatTile";
 import { toast } from "@/store/useToast";
 import { cn } from "@/lib/utils";
@@ -45,10 +46,6 @@ function riskTone(risk: string): "green" | "amber" | "coral" | "neutral" {
   return "neutral";
 }
 
-function compactRiskLabel(risk: string): string {
-  return risk || "Unknown";
-}
-
 export function AllocationManager() {
   const [data, setData] = useState<AllocationData>();
   const [loading, setLoading] = useState(true);
@@ -58,6 +55,16 @@ export function AllocationManager() {
   const [lastResetCleared, setLastResetCleared] = useState<number>();
   const [showAllWorkload, setShowAllWorkload] = useState(false);
   const [showAllPending, setShowAllPending] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     setError(undefined);
@@ -84,39 +91,85 @@ export function AllocationManager() {
     };
   }, [refresh]);
 
-  async function handleRun() {
-    setAction("run");
-    setError(undefined);
-    try {
-      const result = await runAllocation();
-      setLastRun(result);
-      setLastResetCleared(undefined);
-      await refresh();
-      toast.success(`Allocation complete: ${result.allocated} allocated, ${result.skipped} skipped.`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Allocation run failed.";
-      setError(message);
-      toast.error(message);
-    } finally {
-      setAction(null);
-    }
+async function handleRun() {
+  setAction("run");
+  setError(undefined);
+
+  let result: AllocationRunResponse;
+
+  try {
+    result = await runAllocation();
+  } catch (err) {
+    if (!mountedRef.current) return;
+
+    const message =
+      err instanceof Error ? err.message : "Allocation run failed.";
+
+    setError(message);
+    toast.error(message);
+    setAction(null);
+    return;
   }
+
+  if (!mountedRef.current) return;
+
+  setLastRun(result);
+  setLastResetCleared(undefined);
+
+  toast.success(
+    `Allocation complete: ${result.allocated} allocated, ${result.skipped} skipped.`,
+  );
+
+  try {
+    await refresh();
+  } catch {
+    if (mountedRef.current) {
+      toast.error(
+        "Allocation ran, but the dashboard could not refresh. Reload to see the latest data.",
+      );
+    }
+  } finally {
+    if (mountedRef.current) setAction(null);
+  }
+}
 
   async function handleReset() {
     setAction("reset");
     setError(undefined);
+
+    let result: AllocationResetResponse;
+
     try {
-      const result = await resetAllocation();
-      setLastResetCleared(result.cleared);
-      setLastRun(undefined);
-      await refresh();
-      toast.success(`Allocation reset cleared ${result.cleared} records.`);
+      result = await resetAllocation();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Allocation reset failed.";
+      if (!mountedRef.current) return;
+
+      const message =
+        err instanceof Error ? err.message : "Allocation reset failed.";
+
       setError(message);
       toast.error(message);
-    } finally {
       setAction(null);
+      return;
+    }
+
+    if (!mountedRef.current) return;
+
+    setLastResetCleared(result.cleared);
+    setLastRun(undefined);
+
+    toast.success(`Allocation reset cleared ${result.cleared} records.`);
+
+    try {
+      await refresh();
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          "Allocation reset completed, but the dashboard could not refresh. Reload to see the latest data.",
+        );
+      }
+    } finally {
+      if (mountedRef.current) setAction(null);
     }
   }
 
@@ -147,7 +200,7 @@ export function AllocationManager() {
           </Button>
           <Button
             variant="danger"
-            onClick={handleReset}
+            onClick={() => setShowResetConfirm(true)}
             disabled={loading || action !== null}
             iconLeft={<RotateCcw size={16} />}
           >
@@ -293,7 +346,7 @@ export function AllocationManager() {
                   <td className="px-3 py-2.5 text-caption text-ink-soft">{student.department}</td>
                   <td className="px-3 py-2.5">
                     <Badge tone={riskTone(student.risk_status)} dot>
-                      {compactRiskLabel(student.risk_status)}
+                      {student.risk_status || "Unknown"}
                     </Badge>
                   </td>
                 </tr>
@@ -302,6 +355,38 @@ export function AllocationManager() {
           </CompactTable>
         </>
       ) : null}
+
+      <Modal
+        open={showResetConfirm}
+        onClose={() => setShowResetConfirm(false)}
+        title="Reset allocation"
+        description="This clears all current allocation results so a fresh run can be performed."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setShowResetConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              iconLeft={<RotateCcw size={16} />}
+              onClick={() => {
+                setShowResetConfirm(false);
+                void handleReset();
+              }}
+            >
+              Confirm Reset
+            </Button>
+          </>
+        }
+      >
+        <div className="flex items-start gap-3 rounded-md border border-signal-coral/25 bg-signal-coral/5 p-4">
+          <AlertTriangle size={20} className="mt-0.5 shrink-0 text-signal-coral" />
+          <p className="text-caption text-ink">
+            All current allocation results will be cleared. This cannot be undone, and
+            pending students will need to be allocated again.
+          </p>
+        </div>
+      </Modal>
     </GlassCard>
   );
 }
