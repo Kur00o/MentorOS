@@ -91,47 +91,47 @@ export function AllocationManager() {
     };
   }, [refresh]);
 
-async function handleRun() {
-  setAction("run");
-  setError(undefined);
+  async function handleRun() {
+    setAction("run");
+    setError(undefined);
 
-  let result: AllocationRunResponse;
+    let result: AllocationRunResponse;
 
-  try {
-    result = await runAllocation();
-  } catch (err) {
+    try {
+      result = await runAllocation();
+    } catch (err) {
+      if (!mountedRef.current) return;
+
+      const message =
+        err instanceof Error ? err.message : "Allocation run failed.";
+
+      setError(message);
+      toast.error(message);
+      setAction(null);
+      return;
+    }
+
     if (!mountedRef.current) return;
 
-    const message =
-      err instanceof Error ? err.message : "Allocation run failed.";
+    setLastRun(result);
+    setLastResetCleared(undefined);
 
-    setError(message);
-    toast.error(message);
-    setAction(null);
-    return;
-  }
+    toast.success(
+      `Allocation complete: ${result.allocated} allocated, ${result.skipped} skipped.`,
+    );
 
-  if (!mountedRef.current) return;
-
-  setLastRun(result);
-  setLastResetCleared(undefined);
-
-  toast.success(
-    `Allocation complete: ${result.allocated} allocated, ${result.skipped} skipped.`,
-  );
-
-  try {
-    await refresh();
-  } catch {
-    if (mountedRef.current) {
-      toast.error(
-        "Allocation ran, but the dashboard could not refresh. Reload to see the latest data.",
-      );
+    try {
+      await refresh();
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          "Allocation ran, but the dashboard could not refresh. Reload to see the latest data.",
+        );
+      }
+    } finally {
+      if (mountedRef.current) setAction(null);
     }
-  } finally {
-    if (mountedRef.current) setAction(null);
   }
-}
 
   async function handleReset() {
     setAction("reset");
