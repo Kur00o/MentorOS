@@ -55,6 +55,7 @@ def _pending_from_student(student: Student) -> PendingStudent:
         full_name=user.full_name if user is not None else "",
         department=student.department,
         risk_status=student.risk_status,
+        success_score=student.success_score,
     )
 
 

@@ -17,6 +17,7 @@ from backend.app.students.router import router as students_router
 from backend.app.scoring.router import router as scoring_router
 from backend.app.mentoring.router import router as mentoring_router
 from backend.app.admin.router import router as admin_router
+from backend.app.allocation.router import router as allocation_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -53,3 +54,4 @@ app.include_router(students_router, prefix=f"{settings.API_V1_STR}/students", ta
 app.include_router(scoring_router, prefix=f"{settings.API_V1_STR}/scoring", tags=["Team B - Success Score"])
 app.include_router(mentoring_router, prefix=f"{settings.API_V1_STR}/mentoring", tags=["Team B - Mentoring & Roster"])
 app.include_router(admin_router, prefix=f"{settings.API_V1_STR}/admin", tags=["Team C - Administration"])
+app.include_router(allocation_router, prefix=f"{settings.API_V1_STR}/allocation", tags=["Allocation"])

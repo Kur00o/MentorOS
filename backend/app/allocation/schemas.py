@@ -78,3 +78,4 @@ class PendingStudent(BaseModel):
     full_name: str
     department: str
     risk_status: str
+    success_score: float | None = None
