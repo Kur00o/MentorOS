@@ -140,6 +140,48 @@ export interface RosterEntry {
   open_action_items: number;
 }
 
+/**
+ * Risk as the mentor roster reports it. A student missing attendance or SGPA
+ * can't be scored at all, which the other dashboards don't model — hence a
+ * separate type rather than widening `RiskCategory`.
+ */
+export type RiskStatus = RiskCategory | "insufficient_data";
+
+/**
+ * GET /mentoring/roster. Score fields are null when the student can't be
+ * scored; the components are only populated once the scoring engine has run
+ * for them, so they can be null even when a total score exists.
+ */
+export interface MentorRosterItem {
+  student_id: number;
+  usn: string;
+  full_name: string;
+  email: string;
+  department: string;
+  semester: number;
+  attendance_component: number | null;
+  academic_component: number | null;
+  engagement_component: number | null;
+  placement_component: number | null;
+  success_score: number | null;
+  risk_status: RiskStatus;
+  consent_given: boolean;
+  last_meeting?: Meeting;
+  next_meeting?: Meeting;
+  open_action_items: number;
+}
+
+/** GET /mentoring/dashboard */
+export interface MentorDashboardStats {
+  total_mentees: number;
+  at_risk_count: number;
+  needs_attention_count: number;
+  on_track_count: number;
+  upcoming_meetings: number;
+  completed_meetings: number;
+  avg_success_score: number;
+}
+
 /** Aggregates for the HOD dashboard. */
 export interface DepartmentOverview {
   department: Department;

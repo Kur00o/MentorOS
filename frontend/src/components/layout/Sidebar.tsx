@@ -4,6 +4,7 @@ import { ArrowLeft, Check, ChevronDown, LogOut, X } from "lucide-react";
 import type { Role } from "@/types";
 import { useAppStore } from "@/store/useAppStore";
 import { ROLE_HOME, ROLE_TITLE, resolveIdentity } from "@/api/session";
+import { isDemoMode } from "@/api/client";
 import { Avatar } from "@/components/primitives/Avatar";
 import { Brand } from "@/components/Brand";
 import { NAV } from "./nav";
@@ -38,7 +39,7 @@ function DemoRoleSwitcher({ role: _role }: { role: Role }) {
   function choose(r: Role) {
     setActiveRole(r);
     setOpen(false);
-    navigate(ROLE_HOME[r]);
+    navigate(isDemoMode() ? `/demo/${r}` : ROLE_HOME[r]);
   }
 
   return (

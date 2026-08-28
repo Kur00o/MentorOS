@@ -2,7 +2,7 @@ import type { PlatformUser, Role } from "@/types";
 import { DB } from "@/mock/data";
 import { HOD_NAME } from "@/mock/names";
 import { RISK_META } from "@/lib/score";
-import { clone, respond } from "./client";
+import { clone, isDemoMode, respond } from "./client";
 
 function isoDaysAgo(days: number): string {
   const d = new Date();
@@ -221,6 +221,9 @@ export interface ImportResult {
 
 /** POST /api/v1/admin/import/:type — multipart upload. */
 export async function importCsv(type: ImportType, file: File): Promise<ImportResult> {
+  if (isDemoMode()) {
+    return respond(() => ({ row_count: 0, success_count: 0, error_log: [] }));
+  }
   const form = new FormData();
   form.append("file", file);
   const token = sessionStorage.getItem("token");

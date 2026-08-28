@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { BookOpen, CalendarDays, Camera, KeyRound, Lock, Mail, Phone, Save, UserCircle2 } from "lucide-react";
+import { Camera, KeyRound, Lock, Mail, Phone, Save, UserCircle2 } from "lucide-react";
 import { getMyStudentProfile } from "@/api";
 import { useAsync } from "@/lib/useAsync";
 import { Avatar } from "@/components/primitives/Avatar";

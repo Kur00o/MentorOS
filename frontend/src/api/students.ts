@@ -1,6 +1,6 @@
 import type { ConsentSettings, Meeting, Student } from "@/types";
 import { DB } from "@/mock/data";
-import { clone, respond } from "./client";
+import { clone, isDemoMode, respond } from "./client";
 
 const API_BASE = "/api/v1";
 
@@ -12,6 +12,7 @@ function authHeaders(): HeadersInit {
 /** GET /students/me — real backend, authenticated */
 export async function getMyStudentProfile(): Promise<Student | null> {
   const token = sessionStorage.getItem("token");
+  if (!token && isDemoMode()) return respond(() => clone(DB.students.find((s) => s.id === DB.demoStudentId) ?? null));
   if (!token) return null;
 
   const resp = await fetch(`${API_BASE}/students/me`, { headers: authHeaders() });

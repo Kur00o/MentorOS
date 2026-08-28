@@ -66,3 +66,5 @@ Thumbs.db
 *.sln
 *.sw?
 CLAUDE.md
+docs/
+PDFs/

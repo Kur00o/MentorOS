@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ClipboardCheck, Plus, Trash2 } from "lucide-react";
-import type { ActionItem, Meeting, MeetingLog } from "@/types";
+import type { ActionItem, MeetingLog } from "@/types";
 import { logMeeting, recordMeeting } from "@/api";
 import { Button, Input, Modal, Textarea } from "@/components/primitives";
 import { toast } from "@/store/useToast";
@@ -29,20 +29,18 @@ export function LogMeetingModal({
   onClose,
   studentId,
   studentName,
-  mentorId,
   meetingId,
   scheduledFor,
   onLogged,
 }: {
   open: boolean;
   onClose: () => void;
-  studentId: string;
+  studentId: number;
   studentName: string;
-  mentorId: string;
   /** When closing out a pre-scheduled meeting. */
   meetingId?: string;
   scheduledFor?: string;
-  onLogged?: (m: Meeting) => void;
+  onLogged?: () => void;
 }) {
   const [topics, setTopics] = useState<string[]>([]);
   const [summary, setSummary] = useState("");
@@ -85,21 +83,26 @@ export function LogMeetingModal({
       logged_at: new Date().toISOString(),
     };
 
-    const meeting = meetingId
-      ? await logMeeting(meetingId, log)
-      : await recordMeeting({
+    try {
+      if (meetingId) {
+        await logMeeting(meetingId, log);
+      } else {
+        await recordMeeting({
           student_id: studentId,
-          mentor_id: mentorId,
           scheduled_for: scheduledFor ?? new Date().toISOString(),
           mode: "in-person",
           log,
         });
-
-    setSubmitting(false);
-    toast.success(`Meeting with ${firstName} logged.`);
-    onLogged?.(meeting);
-    reset();
-    onClose();
+      }
+      toast.success(`Meeting with ${firstName} logged.`);
+      onLogged?.();
+      reset();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save meeting log.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (

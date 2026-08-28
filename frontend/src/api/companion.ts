@@ -15,7 +15,6 @@
 import type { ScoreBreakdown } from "@/types";
 import { DB } from "@/mock/data";
 import { FAQ, COMPANION_FALLBACK } from "@/mock/companion";
-import { scheduleMeeting } from "./mentors";
 import { clone } from "./client";
 
 export type CompanionRole = "user" | "assistant";
@@ -124,11 +123,12 @@ function route(t: string, ctx: CompanionContext): CompanionMessage {
     when.setDate(when.getDate() + 3);
     when.setHours(11, 0, 0, 0);
     const mentor = DB.mentors.find((m) => m.id === student.mentor_id);
-    // Reuse the same API a mentor would — the booking really lands on the roster.
-    void scheduleMeeting({
+    DB.meetings.push({
+      id: `mtg-${Date.now()}`,
       student_id: student.id,
       mentor_id: student.mentor_id,
       scheduled_for: when.toISOString(),
+      status: "scheduled",
       mode: "video",
     });
     return reply({

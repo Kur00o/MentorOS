@@ -5,6 +5,8 @@ import type {
   AllocationRunResponse,
   AllocationStatistics,
 } from "@/types";
+import { DB } from "@/mock/data";
+import { clone, isDemoMode, respond } from "./client";
 
 const BASE = "/api/v1/allocation";
 
@@ -42,21 +44,63 @@ function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function getAllocationStatistics(): Promise<AllocationStatistics> {
+  if (isDemoMode()) {
+    return respond(() => ({
+      total_students: DB.students.length,
+      total_mentors: DB.mentors.length,
+      allocated: DB.students.length,
+      pending: 0,
+      by_department: {
+        [DB.department.code]: {
+          total_students: DB.students.length,
+          total_mentors: DB.mentors.length,
+          allocated: DB.students.length,
+          pending: 0,
+        },
+      },
+    }));
+  }
   return request<AllocationStatistics>("/statistics");
 }
 
 export function getAllocationWorkload(): Promise<AllocationMentorWorkload[]> {
+  if (isDemoMode()) {
+    return respond(() => clone(DB.mentors.map((mentor) => ({
+      mentor_id: Number(mentor.id.replace("mnt-", "")),
+      mentor_name: mentor.name,
+      department: DB.department.code,
+      current: DB.students.filter((student) => student.mentor_id === mentor.id).length,
+      max: 20,
+      mentees: DB.students
+        .filter((student) => student.mentor_id === mentor.id)
+        .map((student) => ({
+          id: Number(student.id.replace("stu-", "")),
+          usn: student.roll_no,
+          full_name: student.name,
+          risk_status: student.score.risk_category,
+        })),
+    }))));
+  }
   return request<AllocationMentorWorkload[]>("/workload");
 }
 
 export function getAllocationPending(): Promise<AllocationPendingStudent[]> {
+  if (isDemoMode()) return respond(() => []);
   return request<AllocationPendingStudent[]>("/pending");
 }
 
 export function runAllocation(): Promise<AllocationRunResponse> {
+  if (isDemoMode()) {
+    return respond(() => ({
+      allocated: 0,
+      skipped: 0,
+      by_department: { [DB.department.code]: { allocated: 0, skipped: 0 } },
+    }));
+  }
   return request<AllocationRunResponse>("/run", { method: "POST" });
 }
 
 export function resetAllocation(): Promise<AllocationResetResponse> {
+  if (isDemoMode()) return respond(() => ({ cleared: 0 }));
   return request<AllocationResetResponse>("/reset", { method: "POST" });
 }
