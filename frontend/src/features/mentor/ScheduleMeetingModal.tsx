@@ -16,14 +16,12 @@ export function ScheduleMeetingModal({
   onClose,
   studentId,
   studentName,
-  mentorId,
   onScheduled,
 }: {
   open: boolean;
   onClose: () => void;
-  studentId: string;
+  studentId: number;
   studentName: string;
-  mentorId: string;
   onScheduled?: (m: Meeting) => void;
 }) {
   const [date, setDate] = useState(tomorrowISODate());
@@ -42,16 +40,20 @@ export function ScheduleMeetingModal({
     }
     setError(undefined);
     setSubmitting(true);
-    const meeting = await scheduleMeeting({
-      student_id: studentId,
-      mentor_id: mentorId,
-      scheduled_for: when.toISOString(),
-      mode,
-    });
-    setSubmitting(false);
-    toast.success(`Meeting scheduled with ${firstName}.`);
-    onScheduled?.(meeting);
-    onClose();
+    try {
+      const meeting = await scheduleMeeting({
+        student_id: studentId,
+        scheduled_for: when.toISOString(),
+        mode,
+      });
+      toast.success(`Meeting scheduled with ${firstName}.`);
+      onScheduled?.(meeting);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Meeting could not be scheduled.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (

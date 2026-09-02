@@ -63,17 +63,27 @@ class MentorResponse(MentorBase):
 
 
 class MentorRosterItem(BaseModel):
-    """A student in the mentor's roster with score and meeting context."""
+    """
+    A student in the mentor's roster with score and meeting context.
+
+    Score fields are nullable on purpose: a student with no attendance or no
+    SGPA cannot be scored (`risk_status="insufficient_data"`), and the roster
+    must show that rather than a number. The four components are only known
+    when the scoring engine has written a `student_success_scores` row; when we
+    fall back to the mirrored `students.success_score` they stay null.
+    """
     student_id: int
     usn: str
     full_name: str
     email: str
     department: str
     semester: int
-    attendance_rate: float
-    cgpa: float
-    success_score: float
-    risk_status: str
+    attendance_component: Optional[float] = None
+    academic_component: Optional[float] = None
+    engagement_component: Optional[float] = None
+    placement_component: Optional[float] = None
+    success_score: Optional[float] = None
+    risk_status: str  # green | amber | coral | insufficient_data
     consent_given: bool
     last_meeting: Optional[MeetingResponse] = None
     next_meeting: Optional[MeetingResponse] = None

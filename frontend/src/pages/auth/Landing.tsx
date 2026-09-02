@@ -47,28 +47,28 @@ const COMPONENT_ICON: Record<ComponentKey, typeof Activity> = {
 const ROLES: Array<{ role: Role; to: string; title: string; blurb: string; icon: typeof Users }> = [
   {
     role: "student",
-    to: "/app/student",
+    to: "/demo/student",
     title: "Students",
     blurb: "See your own signal and exactly what moves it — with an AI companion to explain the rest.",
     icon: GraduationCap,
   },
   {
     role: "mentor",
-    to: "/app/mentor",
+    to: "/demo/mentor",
     title: "Mentors",
     blurb: "A roster sorted by who needs you. Schedule check-ins and log them as structured notes.",
     icon: Users,
   },
   {
     role: "hod",
-    to: "/app/hod",
+    to: "/demo/hod",
     title: "HODs",
     blurb: "Department-wide risk, mentor workload and semester trends — the whole cohort at a glance.",
     icon: LayoutDashboard,
   },
   {
     role: "admin",
-    to: "/app/admin",
+    to: "/demo/admin",
     title: "Admins",
     blurb: "Manage people, import attendance and marks, and export accreditation-ready reports.",
     icon: ShieldCheck,
@@ -421,10 +421,10 @@ export default function Landing() {
                   view and find the students who need you.
                 </p>
                 <div className="flex flex-wrap justify-center gap-3">
-                  <Button size="lg" onClick={() => navigate("/app/mentor")} iconRight={<ArrowRight size={18} />}>
+                  <Button size="lg" onClick={() => navigate("/demo/mentor")} iconRight={<ArrowRight size={18} />}>
                     Open the live demo
                   </Button>
-                  <Button size="lg" variant="secondary" onClick={() => navigate("/app/student")}>
+                  <Button size="lg" variant="secondary" onClick={() => navigate("/demo/student")}>
                     Start as a student
                   </Button>
                 </div>

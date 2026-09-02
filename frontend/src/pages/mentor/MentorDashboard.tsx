@@ -7,8 +7,8 @@ import {
   Users,
   Video,
 } from "lucide-react";
-import type { RosterEntry } from "@/types";
-import { DEMO, getMentor, getMentorRoster } from "@/api";
+import type { MentorRosterItem } from "@/types";
+import { getMe, getMentorDashboard, getMentorRoster } from "@/api";
 import { RISK_META } from "@/lib/score";
 import { useAsync } from "@/lib/useAsync";
 import { formatDate, formatTime } from "@/lib/utils";
@@ -19,34 +19,40 @@ import { RosterTable } from "@/features/mentor/RosterTable";
 import { ScheduleMeetingModal } from "@/features/mentor/ScheduleMeetingModal";
 import { LogMeetingModal } from "@/features/mentor/LogMeetingModal";
 
+function avatarHue(studentId: number): number {
+  return 200 + ((studentId * 37) % 150);
+}
+
 export default function MentorDashboard() {
-  const mentorId = DEMO.mentorId;
-  const mentor = useAsync(() => getMentor(mentorId), [mentorId]);
-  const roster = useAsync(() => getMentorRoster(mentorId), [mentorId]);
+  const me = useAsync(() => getMe(), []);
+  const roster = useAsync(() => getMentorRoster(), []);
+  const stats = useAsync(() => getMentorDashboard(), []);
 
-  const [scheduleFor, setScheduleFor] = useState<RosterEntry | null>(null);
-  const [logFor, setLogFor] = useState<RosterEntry | null>(null);
+  const [scheduleFor, setScheduleFor] = useState<MentorRosterItem | null>(null);
+  const [logFor, setLogFor] = useState<MentorRosterItem | null>(null);
 
-  if (roster.loading || mentor.loading) return <LoadingState label="Loading your roster…" />;
+  if (roster.loading || stats.loading) return <LoadingState label="Loading your roster…" />;
 
   if (roster.error || !roster.data) {
     return (
       <EmptyState
         icon={<AlertTriangle size={22} />}
         title="We couldn't load your roster"
-        body={roster.error ?? "Something went wrong fetching your mentees."}
+        body={roster.error ?? "Unable to load mentees. Please try again."}
         action={<Button onClick={roster.reload}>Try again</Button>}
       />
     );
   }
 
   const rows = roster.data;
-  const riskCounts = { green: 0, amber: 0, coral: 0 };
-  let openItems = 0;
-  for (const r of rows) {
-    riskCounts[r.student.score.risk_category]++;
-    openItems += r.open_action_items;
+  const summary = stats.data;
+  const openItems = rows.reduce((sum, r) => sum + r.open_action_items, 0);
+
+  function refresh() {
+    roster.reload();
+    stats.reload();
   }
+
   const upcoming = rows
     .filter((r) => r.next_meeting)
     .sort(
@@ -55,7 +61,7 @@ export default function MentorDashboard() {
         new Date(b.next_meeting!.scheduled_for).getTime(),
     );
 
-  const firstName = mentor.data?.name.split(" ").slice(-1)[0] ?? "there";
+  const firstName = me.data?.full_name?.split(" ").slice(-1)[0] ?? "there";
 
   return (
     <div className="flex flex-col gap-8">
@@ -66,17 +72,22 @@ export default function MentorDashboard() {
       />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Mentees" value={rows.length} icon={<Users size={18} />} sublabel="In your care this term" />
+        <StatTile
+          label="Mentees"
+          value={summary?.total_mentees ?? rows.length}
+          icon={<Users size={18} />}
+          sublabel="In your care this term"
+        />
         <StatTile
           label="At risk"
-          value={riskCounts.coral}
+          value={summary?.at_risk_count ?? 0}
           icon={<AlertTriangle size={18} />}
           accent={RISK_META.coral.hex}
           sublabel="Need attention now"
         />
         <StatTile
           label="To monitor"
-          value={riskCounts.amber}
+          value={summary?.needs_attention_count ?? 0}
           accent={RISK_META.amber.hex}
           sublabel="Worth a check-in"
         />
@@ -113,10 +124,10 @@ export default function MentorDashboard() {
               const m = e.next_meeting!;
               return (
                 <div key={m.id} className="flex flex-wrap items-center gap-3 p-4">
-                  <Avatar name={e.student.name} hue={e.student.avatar_hue} size="sm" />
+                  <Avatar name={e.full_name} hue={avatarHue(e.student_id)} size="sm" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-body font-medium text-ink">{e.student.name}</p>
-                    <p className="font-mono tnum text-caption text-ink-soft">{e.student.roll_no}</p>
+                    <p className="truncate text-body font-medium text-ink">{e.full_name}</p>
+                    <p className="font-mono tnum text-caption text-ink-soft">{e.usn}</p>
                   </div>
                   <div className="flex items-center gap-2 text-caption text-ink">
                     <CalendarClock size={15} className="text-ink-soft" />
@@ -142,22 +153,20 @@ export default function MentorDashboard() {
         <ScheduleMeetingModal
           open
           onClose={() => setScheduleFor(null)}
-          studentId={scheduleFor.student.id}
-          studentName={scheduleFor.student.name}
-          mentorId={mentorId}
-          onScheduled={() => roster.reload()}
+          studentId={scheduleFor.student_id}
+          studentName={scheduleFor.full_name}
+          onScheduled={refresh}
         />
       )}
       {logFor && (
         <LogMeetingModal
           open
           onClose={() => setLogFor(null)}
-          studentId={logFor.student.id}
-          studentName={logFor.student.name}
-          mentorId={mentorId}
+          studentId={logFor.student_id}
+          studentName={logFor.full_name}
           meetingId={logFor.next_meeting?.id}
           scheduledFor={logFor.next_meeting?.scheduled_for}
-          onLogged={() => roster.reload()}
+          onLogged={refresh}
         />
       )}
 

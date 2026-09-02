@@ -22,7 +22,10 @@ class Student(Base):
     attendance_rate = Column(Float, default=100.0)
     cgpa = Column(Float, default=0.0)
     sgpa = Column(Float, nullable=True)  # THIS semester's GPA — drives Academic component
-    success_score = Column(Float, default=100.0)
+    # No default: an unscored student must read as "no score yet", not as a
+    # perfect one. The scoring engine fills this in; null means the mentor
+    # roster shows insufficient_data.
+    success_score = Column(Float, nullable=True)
     risk_status = Column(String, default="Green") # Green, Amber, Coral
     
     # Consent flag (legacy single boolean — kept for backward compatibility).

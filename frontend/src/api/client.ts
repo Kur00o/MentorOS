@@ -9,6 +9,10 @@
 
 const DEFAULT_LATENCY: [number, number] = [180, 420];
 
+export function isDemoMode(): boolean {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/demo/");
+}
+
 function jitter([min, max]: [number, number]): number {
   return min + Math.random() * (max - min);
 }

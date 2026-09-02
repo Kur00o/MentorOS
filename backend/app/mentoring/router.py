@@ -10,9 +10,9 @@ from backend.app.models.user import User
 from backend.app.models.student import Student
 from backend.app.models.mentor import Mentor
 from backend.app.models.meeting import Meeting, MeetingLog
+from backend.app.models.academic import StudentSuccessScore
 from backend.app.mentoring import schemas as mentoring_schemas
 from backend.app.students import schemas as student_schemas
-from backend.app.scoring.router import compute_success_score, get_risk_band
 
 router = APIRouter()
 
@@ -30,6 +30,87 @@ def _get_mentor_for_user(db: Session, current_user: User) -> Mentor:
             detail="No mentor profile found for current user"
         )
     return mentor
+
+
+RISK_STATUS_TO_CATEGORY = {
+    "Green": "green",
+    "Amber": "amber",
+    "Coral": "coral",
+    "Insufficient": "insufficient_data",
+}
+
+
+def _latest_score_rows(db: Session, student_ids: list) -> dict:
+    """Latest StudentSuccessScore per student, keyed by student_id."""
+    if not student_ids:
+        return {}
+
+    rows = (
+        db.query(StudentSuccessScore)
+        .filter(StudentSuccessScore.student_id.in_(student_ids))
+        .order_by(StudentSuccessScore.student_id, StudentSuccessScore.computed_at.desc())
+        .all()
+    )
+    latest = {}
+    for row in rows:
+        latest.setdefault(row.student_id, row)
+    return latest
+
+
+def _resolve_score(student: Student, score_row) -> dict:
+    """
+    Work out what to show for a student's score.
+
+    The scoring engine's history row wins when it exists — it carries the four
+    components and the authoritative risk category. Otherwise we fall back to
+    the value mirrored onto `students` (see PRD 4.5), which has no component
+    breakdown. Either way, no score means `insufficient_data` — never 0.
+    """
+    if score_row is not None:
+        return {
+            "attendance_component": score_row.attendance_component,
+            "academic_component": score_row.academic_component,
+            "engagement_component": score_row.engagement_component,
+            "placement_component": score_row.placement_component,
+            "success_score": score_row.total_score,
+            "risk_status": (
+                score_row.risk_category
+                if score_row.total_score is not None
+                else "insufficient_data"
+            ),
+        }
+
+    risk = RISK_STATUS_TO_CATEGORY.get(student.risk_status or "", "insufficient_data")
+    return {
+        "attendance_component": None,
+        "academic_component": None,
+        "engagement_component": None,
+        "placement_component": None,
+        "success_score": student.success_score,
+        "risk_status": risk if student.success_score is not None else "insufficient_data",
+    }
+
+
+def _open_action_item_counts(db: Session, student_ids: list) -> dict:
+    """
+    Action items recorded against each student's meeting logs.
+
+    `MeetingLog.action_items` has no completion flag, so every recorded item
+    counts. Closing items isn't supported yet.
+    """
+    if not student_ids:
+        return {}
+
+    rows = (
+        db.query(Meeting.student_id, MeetingLog.action_items)
+        .join(MeetingLog, MeetingLog.meeting_id == Meeting.id)
+        .filter(Meeting.student_id.in_(student_ids))
+        .all()
+    )
+    counts = {}
+    for student_id, action_items in rows:
+        counts[student_id] = counts.get(student_id, 0) + len(action_items or [])
+    return counts
 
 
 def _enrich_meeting(meeting: Meeting, db: Session) -> mentoring_schemas.MeetingResponse:
@@ -76,6 +157,10 @@ def get_mentor_roster(
     mentor = _get_mentor_for_user(db, current_user)
     students = db.query(Student).filter(Student.mentor_id == mentor.id).all()
 
+    student_ids = [s.id for s in students]
+    score_rows = _latest_score_rows(db, student_ids)
+    action_item_counts = _open_action_item_counts(db, student_ids)
+
     now = datetime.utcnow()
     roster_items = []
 
@@ -113,17 +198,19 @@ def get_mentor_roster(
                 email=student.user.email if student.user else "",
                 department=student.department,
                 semester=student.semester,
-                attendance_rate=student.attendance_rate or 0.0,
-                cgpa=student.cgpa or 0.0,
-                success_score=student.success_score or 0.0,
-                risk_status=student.risk_status or "Green",
                 consent_given=student.consent_given,
                 last_meeting=_enrich_meeting(last_meeting, db) if last_meeting else None,
                 next_meeting=_enrich_meeting(next_meeting, db) if next_meeting else None,
-                open_action_items=0,
+                open_action_items=action_item_counts.get(student.id, 0),
+                **_resolve_score(student, score_rows.get(student.id)),
             )
         )
 
+    # Lowest score first so the students who need attention lead the roster;
+    # unscored students sort last since we don't know where they belong.
+    roster_items.sort(
+        key=lambda item: (item.success_score is None, item.success_score or 0.0)
+    )
     return roster_items
 
 
@@ -512,6 +599,14 @@ def get_student_meetings(
             detail="Cannot view another student's meetings",
         )
 
+    if current_user.role == "Mentor":
+        mentor = _get_mentor_for_user(db, current_user)
+        if student.mentor_id != mentor.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Student is not in your roster",
+            )
+
     meetings = (
         db.query(Meeting)
         .filter(Meeting.student_id == student_id)
@@ -573,9 +668,13 @@ def get_mentor_dashboard(
     mentor = _get_mentor_for_user(db, current_user)
     students = db.query(Student).filter(Student.mentor_id == mentor.id).all()
 
-    at_risk = sum(1 for s in students if s.risk_status == "Coral")
-    needs_attention = sum(1 for s in students if s.risk_status == "Amber")
-    on_track = sum(1 for s in students if s.risk_status == "Green")
+    # Resolved the same way as the roster so the tiles and the table agree.
+    score_rows = _latest_score_rows(db, [s.id for s in students])
+    resolved = [_resolve_score(s, score_rows.get(s.id)) for s in students]
+
+    at_risk = sum(1 for r in resolved if r["risk_status"] == "coral")
+    needs_attention = sum(1 for r in resolved if r["risk_status"] == "amber")
+    on_track = sum(1 for r in resolved if r["risk_status"] == "green")
 
     now = datetime.utcnow()
     upcoming = db.query(Meeting).filter(
@@ -589,11 +688,10 @@ def get_mentor_dashboard(
         Meeting.status == "Completed",
     ).count()
 
-    avg_score = (
-        sum(s.success_score or 0.0 for s in students) / len(students)
-        if students
-        else 0.0
-    )
+    # Unscored students are left out rather than counted as zero, which would
+    # drag the average down and misrepresent the cohort.
+    scored = [r["success_score"] for r in resolved if r["success_score"] is not None]
+    avg_score = sum(scored) / len(scored) if scored else 0.0
 
     return mentoring_schemas.MentorDashboardStats(
         total_mentees=len(students),

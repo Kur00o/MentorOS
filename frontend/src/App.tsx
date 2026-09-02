@@ -31,6 +31,21 @@ function FullScreenFallback() {
   );
 }
 
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { session, user, authLoading } = useAppStore();
+  const hasBackendToken = !!sessionStorage.getItem("token");
+
+  if (authLoading) {
+    return <FullScreenFallback />;
+  }
+
+  if (!session && !user && !hasBackendToken) {
+    return <Navigate to="/auth/login" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export default function App() {
   const { setSession, setAuthLoading, authLoading } = useAppStore();
 
@@ -112,7 +127,20 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/auth/login" element={<Login />} />
           <Route path="/auth/callback" element={<Callback />} />
-          <Route path="/app" element={<AppShell />}>
+          <Route path="/demo" element={<AppShell />}>
+            <Route path="student" element={<StudentDashboard />} />
+            <Route path="mentor" element={<MentorDashboard />} />
+            <Route path="hod" element={<HODDashboard />} />
+            <Route path="admin" element={<AdminDashboard />} />
+          </Route>
+          <Route
+            path="/app"
+            element={
+              <ProtectedRoute>
+                <AppShell />
+              </ProtectedRoute>
+            }
+          >
             <Route index element={<Navigate to="/app/mentor" replace />} />
             <Route path="student" element={<StudentDashboard />} />
             <Route path="student/attendance" element={<AttendancePage />} />
