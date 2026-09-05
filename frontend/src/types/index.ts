@@ -67,6 +67,7 @@ export interface Student {
   mentor_id: string;
   semester: number;
   avatar_hue: number;
+  profile_picture_url?: string | null;
   signals: StudentSignals;
   score: ScoreBreakdown;
   /** Trailing semester scores for the trend line, oldest → newest. */

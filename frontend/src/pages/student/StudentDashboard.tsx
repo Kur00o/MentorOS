@@ -72,7 +72,7 @@ export default function StudentDashboard() {
   const totalClasses = subjects.reduce((sum, r) => sum + (r.total_classes ?? 0), 0);
   const totalAttended = subjects.reduce((sum, r) => sum + (r.attended_classes ?? 0), 0);
   const attendancePct = totalClasses > 0 ? (totalAttended / totalClasses) * 100 : s.signals.attendance_pct;
-  const pictureUrl = (s as any).profile_picture_url as string | null;
+  const pictureUrl = s.profile_picture_url;
 
   return (
     <div className="flex flex-col gap-8">

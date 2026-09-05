@@ -84,9 +84,18 @@ export default function ProfilePage() {
       });
       if (!resp.ok) throw new Error(await resp.text());
       toast.success("Profile picture updated.");
+      window.dispatchEvent(new Event("profile-picture-updated"));
       student.reload();
     } catch (err) {
-      toast.error("Upload failed. Try again.");
+      const message = err instanceof Error && err.message ? err.message : "Upload failed. Try again.";
+      let detail = message;
+      try {
+        const parsed = JSON.parse(message) as { detail?: string };
+        detail = parsed.detail || message;
+      } catch {
+        // Keep the plain response text when the backend did not return JSON.
+      }
+      toast.error(detail);
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -150,7 +159,7 @@ export default function ProfilePage() {
   }
 
   const s = student.data;
-  const pictureUrl = (s as any).profile_picture_url as string | null;
+  const pictureUrl = s.profile_picture_url;
 
   return (
     <div className="flex flex-col gap-6">

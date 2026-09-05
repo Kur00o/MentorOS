@@ -85,7 +85,6 @@ async def upload_profile_picture(
     Upload a profile picture. Stores in Supabase Storage and saves the public URL.
     Accepts image/jpeg, image/png, image/webp — max 5 MB.
     """
-    import io
     from backend.app.core.supabase_client import get_supabase_client
 
     student = db.query(Student).filter(Student.user_id == current_user.id).first()
@@ -117,11 +116,14 @@ async def upload_profile_picture(
     supabase = get_supabase_client()
     supabase.storage.from_("avatars").upload(
         path=storage_path,
-        file=io.BytesIO(contents),
+        file=contents,
         file_options={"content-type": file.content_type, "upsert": "true"},
     )
 
     public_url = supabase.storage.from_("avatars").get_public_url(storage_path)
+    # The storage path is intentionally stable per student; version the URL so
+    # browsers do not keep displaying the previous cached image after upsert.
+    public_url = f"{public_url}?v={int(datetime.now(timezone.utc).timestamp() * 1000)}"
     student.profile_picture_url = public_url
     db.commit()
     db.refresh(student)

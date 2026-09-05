@@ -35,6 +35,7 @@ export async function getMyStudentProfile(): Promise<Student | null> {
     mentor_id: data.mentor_id ? String(data.mentor_id) : "",
     semester: data.semester,
     avatar_hue: 214,
+    profile_picture_url: data.profile_picture_url ?? null,
     signals: {
       attendance_pct: realAttendancePct,
       subjects: records.map((rec: any) => ({

@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Menu, Sparkles } from "lucide-react";
 import type { Role } from "@/types";
+import { getMyStudentProfile } from "@/api";
 import { useAppStore } from "@/store/useAppStore";
 import { ROLE_TITLE } from "@/api/session";
 import { Avatar } from "@/components/primitives/Avatar";
@@ -13,6 +15,24 @@ export function Topbar({ role, title }: { role: Role; title: string }) {
   const signedIn = !!session || !!sessionStorage.getItem("token");
   const userName = user?.user_metadata?.full_name ?? user?.email ?? null;
   const userEmail = user?.email ?? null;
+  const [profilePictureUrl, setProfilePictureUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const refreshProfilePicture = () => {
+      if (role !== "student" || !signedIn) {
+        setProfilePictureUrl(null);
+        return;
+      }
+
+      getMyStudentProfile().then((profile) => {
+        setProfilePictureUrl(profile?.profile_picture_url ?? null);
+      });
+    };
+
+    refreshProfilePicture();
+    window.addEventListener("profile-picture-updated", refreshProfilePicture);
+    return () => window.removeEventListener("profile-picture-updated", refreshProfilePicture);
+  }, [role, signedIn]);
 
   const handleSignOut = async () => {
     try {
@@ -63,11 +83,15 @@ export function Topbar({ role, title }: { role: Role; title: string }) {
         <div className="flex items-center gap-2">
           {/* Avatar + name pill */}
           <div className="hidden items-center gap-2.5 rounded-full border border-ink/8 bg-white/70 py-1.5 pl-1.5 pr-3 sm:flex">
-            <Avatar
-              name={userName ?? userEmail ?? "U"}
-              hue={214}
-              size="sm"
-            />
+            {profilePictureUrl ? (
+              <img
+                src={profilePictureUrl}
+                alt={userName ?? userEmail ?? "Profile"}
+                className="h-8 w-8 rounded-full border border-white object-cover"
+              />
+            ) : (
+              <Avatar name={userName ?? userEmail ?? "U"} hue={214} size="sm" />
+            )}
             <span className="hidden text-left leading-tight lg:block">
               <span className="block text-caption font-medium text-ink">{userName ?? userEmail}</span>
               <span className="block text-[11px] text-ink-soft">{ROLE_TITLE[role]}</span>
