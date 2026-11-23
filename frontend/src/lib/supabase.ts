@@ -1,16 +1,16 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in frontend/.env");
-}
+/** Null when the deployment has no Supabase configuration — the UI then
+ *  shows a clear setup message instead of crashing. */
+export const supabase: SupabaseClient | null =
+  url && anonKey
+    ? createClient(url, anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "mentoros-auth" },
+      })
+    : null;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    detectSessionInUrl: true,
-    autoRefreshToken: true,
-  },
-});
+export const authConfigured = Boolean(supabase);
+export const googleEnabled = import.meta.env.VITE_ENABLE_GOOGLE_AUTH === "true";

@@ -1,104 +1,60 @@
+/** MentorOS "field instrument" design tokens → Tailwind.
+ *  Every colour is a CSS variable (RGB channels) so both themes — Paper
+ *  (default) and Night Shift — come from one definition in index.css. */
+const c = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: ["selector", '[data-theme="night"]'],
   theme: {
     extend: {
       colors: {
-        // Channel form so Tailwind opacity modifiers (bg-ink/4, text-ink/70)
-        // resolve correctly. Solid hex equivalents live in index.css :root.
-        snow: {
-          DEFAULT: "rgb(var(--snow-rgb) / <alpha-value>)",
-          deep: "rgb(var(--snow-deep-rgb) / <alpha-value>)",
-        },
-        ink: {
-          DEFAULT: "rgb(var(--ink-rgb) / <alpha-value>)",
-          soft: "rgb(var(--ink-soft-rgb) / <alpha-value>)",
-        },
-        azure: {
-          200: "rgb(var(--azure-200-rgb) / <alpha-value>)",
-          500: "rgb(var(--azure-500-rgb) / <alpha-value>)",
-          600: "rgb(var(--azure-600-rgb) / <alpha-value>)",
-        },
-        signal: {
-          green: "rgb(var(--signal-green-rgb) / <alpha-value>)",
-          amber: "rgb(var(--signal-amber-rgb) / <alpha-value>)",
-          coral: "rgb(var(--signal-coral-rgb) / <alpha-value>)",
-        },
+        paper: { DEFAULT: c("paper"), deep: c("paper-deep") },
+        sheet: { DEFAULT: c("sheet"), raised: c("sheet-raised") },
+        ink: { DEFAULT: c("ink"), soft: c("ink-soft") },
+        graphite: { DEFAULT: c("graphite"), light: c("graphite-light") },
+        rule: { DEFAULT: c("rule"), strong: c("rule-strong") },
+        pen: { DEFAULT: c("pen"), deep: c("pen-deep"), wash: c("pen-wash") },
+        thrive: { DEFAULT: c("thrive"), wash: c("thrive-wash") },
+        watch: { DEFAULT: c("watch"), wash: c("watch-wash") },
+        critical: { DEFAULT: c("critical"), wash: c("critical-wash") },
+        void: { DEFAULT: c("void"), wash: c("void-wash") },
       },
       fontFamily: {
         display: ["Fraunces", "ui-serif", "Georgia", "serif"],
-        sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["'JetBrains Mono'", "ui-monospace", "SFMono-Regular", "monospace"],
+        sans: ["'Hanken Grotesk'", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        mono: ["'Martian Mono'", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       fontSize: {
-        "display-xl": ["56px", { lineHeight: "60px", letterSpacing: "-0.02em" }],
-        "display-lg": ["40px", { lineHeight: "46px", letterSpacing: "-0.015em" }],
-        heading: ["28px", { lineHeight: "34px", letterSpacing: "-0.01em" }],
-        body: ["16px", { lineHeight: "24px" }],
-        caption: ["13px", { lineHeight: "18px" }],
+        "2xs": ["0.6875rem", { lineHeight: "1rem" }],
+        display: ["clamp(2.75rem, 1.6rem + 4.6vw, 6.5rem)", { lineHeight: "0.92", letterSpacing: "-0.035em" }],
+        hero: ["clamp(2rem, 1.4rem + 2.4vw, 3.5rem)", { lineHeight: "1", letterSpacing: "-0.03em" }],
+        title: ["clamp(1.5rem, 1.25rem + 0.9vw, 2.125rem)", { lineHeight: "1.1", letterSpacing: "-0.02em" }],
       },
-      spacing: {
-        1: "4px",
-        2: "8px",
-        3: "12px",
-        4: "16px",
-        6: "24px",
-        8: "32px",
-        12: "48px",
-        16: "64px",
-        24: "96px",
-      },
-      borderRadius: {
-        sm: "10px",
-        md: "16px",
-        lg: "28px",
-      },
+      borderRadius: { xs: "4px", sm: "8px", md: "12px", lg: "18px", xl: "26px" },
       boxShadow: {
-        "glass-strong":
-          "0 20px 40px -12px rgba(45,111,224,0.25), 0 8px 16px -8px rgba(17,32,59,0.15)",
-        "glass-quiet": "0 8px 24px -8px rgba(17,32,59,0.10)",
-        "glass-lift":
-          "0 28px 50px -12px rgba(45,111,224,0.30), 0 12px 20px -8px rgba(17,32,59,0.18)",
+        sheet: "0 1px 0 rgb(var(--shadow) / 0.06), 0 1px 2px rgb(var(--shadow) / 0.05), 0 8px 24px -12px rgb(var(--shadow) / 0.14)",
+        stack: "0 1px 0 rgb(var(--shadow) / 0.06), 4px 4px 0 -1px rgb(var(--sheet)), 4px 4px 0 0 rgb(var(--rule-strong) / 0.9), 0 18px 40px -20px rgb(var(--shadow) / 0.35)",
+        lift: "0 2px 0 rgb(var(--shadow) / 0.05), 0 24px 48px -22px rgb(var(--shadow) / 0.45)",
+        pen: "0 0 0 3px rgb(var(--pen) / 0.18)",
+        inset: "inset 0 1px 2px rgb(var(--shadow) / 0.08)",
       },
+      transitionTimingFunction: {
+        out: "cubic-bezier(0.16, 1, 0.3, 1)",
+        io: "cubic-bezier(0.65, 0, 0.35, 1)",
+        in: "cubic-bezier(0.7, 0, 0.84, 0)",
+      },
+      transitionDuration: { fast: "250ms", base: "600ms", slow: "1100ms" },
       keyframes: {
-        "count-fade": {
-          from: { opacity: "0", transform: "translateY(4px)" },
-          to: { opacity: "1", transform: "translateY(0)" },
-        },
-        "fade-up": {
-          from: { opacity: "0", transform: "translateY(12px)" },
-          to: { opacity: "1", transform: "translateY(0)" },
-        },
-        "message-in": {
-          from: { opacity: "0", transform: "translateY(8px) scale(0.98)" },
-          to: { opacity: "1", transform: "translateY(0) scale(1)" },
-        },
-        "typing-bounce": {
-          "0%, 80%, 100%": { transform: "translateY(0)", opacity: "0.4" },
-          "40%": { transform: "translateY(-4px)", opacity: "1" },
-        },
-        "coral-pulse": {
-          "0%, 100%": { boxShadow: "0 0 0 0 rgba(192,71,61,0.45)" },
-          "50%": { boxShadow: "0 0 0 6px rgba(192,71,61,0)" },
-        },
-        "blob-drift": {
-          "0%, 100%": { transform: "translate(0px, 0px) scale(1)" },
-          "33%": { transform: "translate(24px, -18px) scale(1.04)" },
-          "66%": { transform: "translate(-18px, 22px) scale(0.98)" },
-        },
-        "specular-shift": {
-          "0%, 100%": { transform: "translateX(-12%) translateY(-8%)", opacity: "0.5" },
-          "50%": { transform: "translateX(12%) translateY(8%)", opacity: "0.85" },
-        },
+        nib: { "0%,100%": { transform: "scale(1)" }, "50%": { transform: "scale(1.35)" } },
+        shimmer: { "100%": { transform: "translateX(100%)" } },
+        "pulse-ring": { "0%": { transform: "scale(.8)", opacity: ".7" }, "100%": { transform: "scale(2.4)", opacity: "0" } },
       },
       animation: {
-        "count-fade": "count-fade 0.5s ease-out both",
-        "fade-up": "fade-up 0.5s cubic-bezier(0.22,1,0.36,1) both",
-        "message-in": "message-in 0.32s cubic-bezier(0.22,1,0.36,1) both",
-        "typing-bounce": "typing-bounce 1.2s ease-in-out infinite",
-        "coral-pulse": "coral-pulse 2.2s ease-in-out infinite",
-        "blob-drift": "blob-drift 20s ease-in-out infinite",
-        "specular-shift": "specular-shift 9s ease-in-out infinite",
+        nib: "nib 1.6s cubic-bezier(0.65,0,0.35,1) infinite",
+        shimmer: "shimmer 1.6s cubic-bezier(0.65,0,0.35,1) infinite",
+        "pulse-ring": "pulse-ring 1.8s cubic-bezier(0.16,1,0.3,1) infinite",
       },
     },
   },

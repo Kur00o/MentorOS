@@ -1,161 +1,142 @@
-import { lazy, Suspense, useEffect } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
-import { AppShell } from "@/components/layout/AppShell";
-import { LoadingState } from "@/components/primitives";
-import { useAppStore } from "@/store/useAppStore";
-import { supabase } from "@/lib/supabase";
-import { loginToBackend } from "@/lib/auth";
-import { Toaster } from "@/components/Toaster";
-import { getMe } from "@/api";
+import { lazy, Suspense, type ReactNode } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { homeFor, useAuth } from "@/lib/auth";
+import type { Role } from "@/lib/types";
+import { Shell, Wordmark } from "@/app/Shell";
+import { Button, Skeleton } from "@/ui/core";
 
-// Route-level code splitting — the landing page no longer pulls in Recharts
-// (HOD) or the heavier dashboard code until those routes are visited.
-const Landing = lazy(() => import("@/pages/auth/Landing"));
-const Login = lazy(() => import("@/pages/auth/Login"));
-const Callback = lazy(() => import("@/pages/auth/Callback"));
-const AdminCreateUsers = lazy(() => import("@/pages/admin/AdminCreateUsers"));
-const StudentDashboard = lazy(() => import("@/pages/student/StudentDashboard"));
-const AttendancePage = lazy(() => import("@/pages/student/AttendancePage"));
-const MeetingsPage = lazy(() => import("@/pages/student/MeetingsPage"));
-const ProfilePage = lazy(() => import("@/pages/student/ProfilePage"));
-const ConsentPage = lazy(() => import("@/pages/student/ConsentPage"));
-const MentorDashboard = lazy(() => import("@/pages/mentor/MentorDashboard"));
-const HODDashboard = lazy(() => import("@/pages/admin/HODDashboard"));
-const AdminDashboard = lazy(() => import("@/pages/admin/AdminDashboard"));
+const Landing = lazy(() => import("@/pages/public/Landing"));
+const Login = lazy(() => import("@/pages/public/Login"));
+const StudentHome = lazy(() => import("@/pages/student/StudentHome"));
+const StudentAttendance = lazy(() => import("@/pages/student/StudentAttendance"));
+const StudentAcademics = lazy(() => import("@/pages/student/StudentAcademics"));
+const StudentMeetings = lazy(() => import("@/pages/student/StudentMeetings"));
+const StudentPlacement = lazy(() => import("@/pages/student/StudentPlacement"));
+const StudentProfile = lazy(() => import("@/pages/student/StudentProfile"));
+const MentorToday = lazy(() => import("@/pages/mentor/MentorToday"));
+const Roster = lazy(() => import("@/pages/staff/Roster"));
+const StudentDetail = lazy(() => import("@/pages/staff/StudentDetail"));
+const MeetingsBoard = lazy(() => import("@/pages/staff/MeetingsBoard"));
+const AlertsBoard = lazy(() => import("@/pages/staff/AlertsBoard"));
+const DepartmentAnalytics = lazy(() => import("@/pages/hod/DepartmentAnalytics"));
+const Allocation = lazy(() => import("@/pages/hod/Allocation"));
+const DataReports = lazy(() => import("@/pages/staff/DataReports"));
+const AdminHome = lazy(() => import("@/pages/admin/AdminHome"));
+const People = lazy(() => import("@/pages/admin/People"));
+const Integrations = lazy(() => import("@/pages/admin/Integrations"));
+const AuditLog = lazy(() => import("@/pages/admin/AuditLog"));
 
-function FullScreenFallback() {
+function Splash() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-snow">
-      <LoadingState label="Loading MentorOS…" />
+    <div className="grid min-h-[60vh] place-items-center">
+      <div className="flex flex-col items-center gap-4">
+        <Wordmark />
+        <Skeleton className="h-1 w-40" />
+      </div>
     </div>
   );
 }
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { session, user, authLoading } = useAppStore();
-  const hasBackendToken = !!sessionStorage.getItem("token");
-
-  if (authLoading) {
-    return <FullScreenFallback />;
+function RequireRole({ roles, children }: { roles: Role[]; children: ReactNode }) {
+  const { status, me, error, signOut } = useAuth();
+  const location = useLocation();
+  if (status === "loading") return <Splash />;
+  if (status === "signed_out") return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (status === "error" || !me) {
+    return (
+      <div className="mx-auto grid min-h-[70vh] max-w-md place-items-center px-6 text-center">
+        <div>
+          <Wordmark />
+          <h1 className="mt-8 font-display text-3xl">We couldn’t open your desk</h1>
+          <p className="mt-2 text-graphite">{error?.message ?? "Your profile could not be loaded."}</p>
+          <Button className="mt-6" variant="ink" onClick={() => signOut()}>Sign out and try another account</Button>
+        </div>
+      </div>
+    );
   }
-
-  if (!session && !user && !hasBackendToken) {
-    return <Navigate to="/auth/login" replace />;
-  }
-
+  if (!roles.includes(me.role)) return <Navigate to={homeFor(me.role)} replace />;
   return <>{children}</>;
 }
 
-export default function App() {
-  const { setSession, setAuthLoading, authLoading } = useAppStore();
-
-  useEffect(() => {
-    async function initAuth() {
-      try {
-        setAuthLoading(true);
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
-
-        const storedToken = sessionStorage.getItem("token");
-        if (storedToken) {
-          try {
-            const me = await getMe();
-            setSession(null, {
-              id: String(me.id),
-              email: me.email,
-              user_metadata: { full_name: me.full_name },
-              role: me.role.toLowerCase(),
-            } as any);
-          } catch (err) {
-            console.error("Failed to restore session me:", err);
-            setSession(null, { email: "signed-in" } as any);
-          }
-        } else if (session) {
-          setSession(session, session.user);
-          const token = sessionStorage.getItem("token");
-          if (!token && session.access_token) {
-            try {
-              await loginToBackend(session.access_token);
-            } catch (err) {
-              console.error("Backend token restore failed:", err);
-            }
-          }
-        } else {
-          setSession(null, null);
-        }
-      } catch (err) {
-        console.error("Failed to restore session on mount:", err);
-        setSession(null, null);
-      } finally {
-        setAuthLoading(false);
-      }
-    }
-
-    initAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session) {
-        setSession(session, session.user);
-        const token = sessionStorage.getItem("token");
-        if (!token && session.access_token) {
-          try {
-            await loginToBackend(session.access_token);
-          } catch (err) {
-            console.error("Backend token refresh on auth change failed:", err);
-          }
-        }
-      } else {
-        setSession(null, null);
-        sessionStorage.removeItem("token");
-      }
-      setAuthLoading(false);
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [setSession, setAuthLoading]);
-
-  if (authLoading) {
-    return <FullScreenFallback />;
-  }
-
+function NotFound() {
   return (
-    <>
-      <Suspense fallback={<FullScreenFallback />}>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/auth/login" element={<Login />} />
-          <Route path="/auth/callback" element={<Callback />} />
-          <Route path="/demo" element={<AppShell />}>
-            <Route path="student" element={<StudentDashboard />} />
-            <Route path="mentor" element={<MentorDashboard />} />
-            <Route path="hod" element={<HODDashboard />} />
-            <Route path="admin" element={<AdminDashboard />} />
-          </Route>
-          <Route
-            path="/app"
-            element={
-              <ProtectedRoute>
-                <AppShell />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<Navigate to="/app/mentor" replace />} />
-            <Route path="student" element={<StudentDashboard />} />
-            <Route path="student/attendance" element={<AttendancePage />} />
-            <Route path="student/meetings" element={<MeetingsPage />} />
-            <Route path="student/profile" element={<ProfilePage />} />
-            <Route path="student/consent" element={<ConsentPage />} />
-            <Route path="mentor" element={<MentorDashboard />} />
-            <Route path="hod" element={<HODDashboard />} />
-            <Route path="admin" element={<AdminDashboard />} />
-            <Route path="admin/create-users" element={<AdminCreateUsers />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
-      <Toaster />
-    </>
+    <div className="grid min-h-[70vh] place-items-center px-6 text-center">
+      <div>
+        <div className="readout">404 · no signal</div>
+        <h1 className="mt-3 font-display text-[4rem] leading-none tracking-[-0.04em]">Flatline.</h1>
+        <p className="mt-3 text-graphite">This page doesn’t exist — or it moved.</p>
+        <a href="/" className="mt-6 inline-block"><Button variant="ink">Back to MentorOS</Button></a>
+      </div>
+    </div>
   );
+}
+
+function Callback() {
+  const { status, me } = useAuth();
+  if (status === "ready" && me) return <Navigate to={homeFor(me.role)} replace />;
+  if (status === "signed_out" || status === "error") return <Navigate to="/login" replace />;
+  return <Splash />;
+}
+
+const staff = (r: Role) => r === "admin" ? ["admin"] as Role[] : [r];
+
+export default function App() {
+  return (
+    <Suspense fallback={<Splash />}>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/auth/callback" element={<Callback />} />
+
+        <Route element={<RequireRole roles={["student"]}><Shell /></RequireRole>}>
+          <Route path="/student" element={<StudentHome />} />
+          <Route path="/student/attendance" element={<StudentAttendance />} />
+          <Route path="/student/academics" element={<StudentAcademics />} />
+          <Route path="/student/meetings" element={<StudentMeetings />} />
+          <Route path="/student/placement" element={<StudentPlacement />} />
+          <Route path="/student/profile" element={<StudentProfile />} />
+        </Route>
+
+        <Route element={<RequireRole roles={staff("mentor")}><Shell /></RequireRole>}>
+          <Route path="/mentor" element={<MentorToday />} />
+          <Route path="/mentor/mentees" element={<Roster />} />
+          <Route path="/mentor/students/:id" element={<StudentDetail />} />
+          <Route path="/mentor/meetings" element={<MeetingsBoard />} />
+          <Route path="/mentor/alerts" element={<AlertsBoard />} />
+        </Route>
+
+        <Route element={<RequireRole roles={staff("hod")}><Shell /></RequireRole>}>
+          <Route path="/hod" element={<DepartmentAnalytics />} />
+          <Route path="/hod/students" element={<Roster />} />
+          <Route path="/hod/students/:id" element={<StudentDetail />} />
+          <Route path="/hod/allocation" element={<Allocation />} />
+          <Route path="/hod/alerts" element={<AlertsBoard />} />
+          <Route path="/hod/meetings" element={<MeetingsBoard />} />
+          <Route path="/hod/reports" element={<DataReports />} />
+        </Route>
+
+        <Route element={<RequireRole roles={["admin"]}><Shell /></RequireRole>}>
+          <Route path="/admin" element={<AdminHome />} />
+          <Route path="/admin/users" element={<People />} />
+          <Route path="/admin/students" element={<Roster />} />
+          <Route path="/admin/students/:id" element={<StudentDetail />} />
+          <Route path="/admin/analytics" element={<DepartmentAnalytics />} />
+          <Route path="/admin/allocation" element={<Allocation />} />
+          <Route path="/admin/data" element={<DataReports />} />
+          <Route path="/admin/integrations" element={<Integrations />} />
+          <Route path="/admin/audit" element={<AuditLog />} />
+        </Route>
+
+        <Route path="/meetings" element={<RoleRedirect suffix="/meetings" />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+function RoleRedirect({ suffix }: { suffix: string }) {
+  const { me, status } = useAuth();
+  if (status === "loading") return <Splash />;
+  if (!me) return <Navigate to="/login" replace />;
+  return <Navigate to={`/${me.role}${suffix}`} replace />;
 }
