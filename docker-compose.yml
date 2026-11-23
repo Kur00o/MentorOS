@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15  # ← changed from postgres:15-alpine
     container_name: mentoros_db
     restart: always
     environment:
@@ -13,6 +13,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql  # ← added
 
   backend:
     build:

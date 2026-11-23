@@ -4,6 +4,7 @@ import type { Role } from "@/types";
 import { useAppStore } from "@/store/useAppStore";
 import { LoadingState } from "@/components/primitives";
 import { CompanionDock } from "@/features/companion/CompanionDock";
+import { CompanionButton } from "@/features/companion/CompanionButton";
 import { Background } from "./Background";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
@@ -51,6 +52,7 @@ export function AppShell() {
         </div>
       </div>
       <CompanionDock />
+      <CompanionButton />
     </div>
   );
 }
