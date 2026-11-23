@@ -356,7 +356,7 @@ def mentor_dashboard(p: Principal = Depends(require_roles("mentor")), db: Sessio
                    "max_mentees": mentor.max_mentees, "specialization": mentor.specialization},
         "kpis": {
             "mentees": len(rows), "capacity": mentor.max_mentees, "avg_score": round(sum(scored) / len(scored), 1) if scored else None,
-            "bands": bands, "open_alerts": len(alerts), "high_alerts": sum(1 for a in alerts if a.severity == "high"),
+            "bands": bands, "open_alerts": len(alerts), "high_alerts": len({a.student_id for a in alerts if a.severity == "high"}),
             "meetings_this_month": completed_month, "pending_requests": len(requests), "open_action_items": open_actions,
             "coverage_45d": round(len(covered) / len(rows) * 100) if rows else 0,
         },

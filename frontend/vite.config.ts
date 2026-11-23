@@ -10,6 +10,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // NEXT_PUBLIC_* are the public Supabase vars injected by the Vercel ↔ Supabase integration.
+  envPrefix: ["VITE_", "NEXT_PUBLIC_"],
+  build: { sourcemap: false, chunkSizeWarningLimit: 700 },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

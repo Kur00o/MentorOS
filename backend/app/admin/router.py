@@ -182,6 +182,9 @@ def update_user(user_id: int, body: UserUpdate, request: Request, p: Principal =
     if u is None:
         raise not_found("User")
     data = body.model_dump(exclude_unset=True)
+    demo = {f"{r}@{settings.DEMO_EMAIL_DOMAIN}" for r in ("student", "mentor", "hod", "admin")}
+    if u.email in demo and (("is_active" in data and not data["is_active"]) or "role" in data or "department_id" in data):
+        raise forbidden("Shared demo accounts are protected from deactivation and role changes")
     if u.id == p.id and (data.get("is_active") is False or (data.get("role") and data["role"] != "admin")):
         raise forbidden("You cannot deactivate or demote your own admin account")
     if "role" in data and u.role == "student":

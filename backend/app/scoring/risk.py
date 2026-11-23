@@ -68,13 +68,13 @@ def evaluate(db: Session, student_ids: list[int], period: str) -> dict[int, dict
         if tot:
             pct = att / tot * 100
             if pct < ATTENDANCE_REQUIREMENT:
-                fire(sid, "low_attendance", "high" if pct < 65 else "medium",
+                fire(sid, "low_attendance", "high" if pct < 60 else "medium",
                      f"Overall attendance is {pct:.1f}%, below the {ATTENDANCE_REQUIREMENT:.0f}% exam-eligibility threshold.",
                      {"attendance_pct": round(pct, 1)})
         short = [(n, a / t * 100) for n, a, t in rows if t and a / t * 100 < ATTENDANCE_REQUIREMENT]
         if short and len(short) >= 1 and (not tot or att / tot * 100 >= ATTENDANCE_REQUIREMENT or len(short) >= 2):
             worst = sorted(short, key=lambda x: x[1])[:3]
-            fire(sid, "subject_shortage", "medium" if len(short) < 3 else "high",
+            fire(sid, "subject_shortage", "high" if len(short) >= 4 else ("medium" if len(short) >= 2 else "low"),
                  "Below 75% in " + ", ".join(f"{n} ({p:.0f}%)" for n, p in worst) + ("…" if len(short) > 3 else "."),
                  {"subjects": [{"subject": n, "pct": round(p, 1)} for n, p in short]})
 
@@ -112,7 +112,7 @@ def evaluate(db: Session, student_ids: list[int], period: str) -> dict[int, dict
             weak[sid].append((name, o / m * 100))
     for sid, items in weak.items():
         items.sort(key=lambda x: x[1])
-        fire(sid, "low_internals", "high" if len(items) >= 2 else "medium",
+        fire(sid, "low_internals", "high" if len(items) >= 3 else "medium",
              "Internal marks under 40% in " + ", ".join(f"{n} ({p:.0f}%)" for n, p in items[:3]) + ".",
              {"subjects": [{"subject": n, "pct": round(p, 1)} for n, p in items]})
 
