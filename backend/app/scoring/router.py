@@ -1,131 +1,62 @@
-from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.app.core.database import get_db
-from backend.app.auth.router import get_current_user
-from backend.app.models.user import User
-from backend.app.models.student import Student
-from backend.app.scoring import schemas
+from backend.app.core.deps import Principal, get_accessible_student, get_principal
+from backend.app.scoring import engine, formula
 
 router = APIRouter()
 
 
-def compute_success_score(attendance: float, academic: float, engagement: float, placement: float) -> float:
-    """
-    Computes the Success Score:
-    score = 0.35 * attendance + 0.35 * academic + 0.15 * engagement + 0.15 * placement
-    """
-    return round((0.35 * attendance) + (0.35 * academic) + (0.15 * engagement) + (0.15 * placement), 2)
+class SimulateIn(BaseModel):
+    attendance: Optional[float] = Field(default=None, ge=0, le=100)
+    sgpa: Optional[float] = Field(default=None, ge=0, le=10)
+    engagement: Optional[float] = Field(default=None, ge=0, le=100)
+    has_resume: Optional[bool] = None
+    skills: Optional[int] = Field(default=None, ge=0, le=50)
+    certifications: Optional[int] = Field(default=None, ge=0, le=50)
 
 
-def get_risk_band(score: float) -> str:
-    """
-    Risk bands:
-    - Green: 70 and above
-    - Amber: 50 to 69
-    - Coral: below 50
-    """
-    if score >= 70.0:
-        return "Green"
-    elif score >= 50.0:
-        return "Amber"
-    else:
-        return "Coral"
-
-
-@router.get("/{student_id}", response_model=schemas.SuccessScoreBreakdown)
-def get_student_score(
-    student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-) -> Any:
-    """
-    Fetch success score explanation and breakdown for a student.
-    Students can fetch their own, and Mentors/HODs/Admins can query any student.
-    """
-    student = db.query(Student).filter(Student.id == student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student not found"
-        )
-    
-    # RBAC check: Student can only view their own
-    if current_user.role == "Student" and student.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view your own success score breakdown"
-        )
-    
-    # Calculate components
-    # Map CGPA to a 100-point scale: CGPA * 10
-    academic_score = min(student.cgpa * 10.0, 100.0)
-    attendance_score = student.attendance_rate
-    
-    # Default placeholder values for engagement and placement (Team B can implement real metrics)
-    engagement_score = 75.0
-    placement_score = 80.0
-    
-    overall_score = compute_success_score(
-        attendance=attendance_score,
-        academic=academic_score,
-        engagement=engagement_score,
-        placement=placement_score
-    )
-    
-    risk_band = get_risk_band(overall_score)
-    
-    # Update student record with the recalculated score & band,
-    student.success_score = overall_score
-    student.risk_status = risk_band
-    db.commit()
-    
+@router.get("/formula")
+def get_formula():
+    """Public description of the score so every client explains it identically."""
     return {
-        "student_id": student.id,
-        "usn": student.usn,
-        "overall_score": overall_score,
-        "risk_band": risk_band,
-        "components": {
-            "attendance_score": attendance_score,
-            "academic_score": academic_score,
-            "engagement_score": engagement_score,
-            "placement_score": placement_score
-        }
+        "weights": formula.WEIGHTS,
+        "bands": {"green": formula.GREEN_MIN, "amber": formula.AMBER_MIN},
+        "attendance_requirement": formula.ATTENDANCE_REQUIREMENT,
+        "placement": {"resume": formula.PLACEMENT_RESUME_POINTS, "per_skill": formula.PLACEMENT_SKILL_POINTS,
+                      "per_certification": formula.PLACEMENT_CERT_POINTS, "max_items": formula.PLACEMENT_CAP_ITEMS},
     }
 
 
-@router.post("/batch-recalculate", status_code=status.HTTP_200_OK)
-def run_batch_recalculation(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-) -> Any:
-    """
-    Run a batch job to recalculate success scores for all students.
-    Accessible only by HOD or Admin.
-    """
-    if current_user.role not in ["HOD", "Admin"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD or Admin can trigger success score batch jobs"
-        )
-    
-    students = db.query(Student).all()
-    count = 0
-    for student in students:
-        academic_score = min(student.cgpa * 10.0, 100.0)
-        attendance_score = student.attendance_rate
-        overall_score = compute_success_score(
-            attendance=attendance_score,
-            academic=academic_score,
-            engagement=75.0,
-            placement=80.0
-        )
-        risk_band = get_risk_band(overall_score)
-        
-        student.success_score = overall_score
-        student.risk_status = risk_band
-        count += 1
-        
-    db.commit()
-    return {"message": f"Successfully ran batch job. Recalculated scores for {count} students."}
+@router.get("/students/{student_id}")
+def live_score(student_id: int, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """Read-only live computation from source tables (does not persist)."""
+    st = get_accessible_student(db, p, student_id)
+    res = engine.compute_scores(db, [st.id])[st.id]
+    return {"student_id": st.id, "usn": st.usn, **res.as_dict()}
+
+
+@router.post("/students/{student_id}/simulate")
+def simulate(student_id: int, body: SimulateIn, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """What-if: override any inputs and see the resulting score and band,
+    computed by the same formula as the real score."""
+    st = get_accessible_student(db, p, student_id)
+    sig = engine.gather_signals(db, [st.id])[st.id]
+    current = sig.score()
+    att = body.attendance if body.attendance is not None else current.attendance_component
+    acad = formula.academic_component(body.sgpa) if body.sgpa is not None else current.academic_component
+    eng = body.engagement if body.engagement is not None else current.engagement_component
+    place = formula.placement_component(
+        body.has_resume if body.has_resume is not None else sig.has_resume,
+        body.skills if body.skills is not None else sig.skills_count,
+        body.certifications if body.certifications is not None else sig.certifications_count,
+    )
+    sim = formula.compose(att, acad, eng, place)
+    return {"current": current.as_dict(), "simulated": sim.as_dict(),
+            "delta": round((sim.total_score or 0) - (current.total_score or 0), 2) if sim.total_score is not None and current.total_score is not None else None}

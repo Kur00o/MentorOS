@@ -1,48 +1,41 @@
-version: "3.8"
-
+# Local full stack: Postgres + API + web + dev auth stub.
+#   docker compose up --build
+#   docker compose exec api python -m backend.scripts.seed   # synthetic demo data
 services:
   db:
-    image: postgres:15-alpine
-    container_name: mentoros_db
-    restart: always
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mentoros
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: mentoros }
+    ports: ["5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 5s, retries: 10 }
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mentoros_backend
-    restart: always
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes:
-      - ./backend:/app
-    ports:
-      - "8000:8000"
+  api:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    env_file: [.env]
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/mentoros
-    depends_on:
-      - db
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/mentoros
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789abcdef}
+    ports: ["8000:8000"]
+    depends_on: { db: { condition: service_healthy } }
 
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: mentoros_frontend
-    restart: always
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
+  auth:  # dev-only GoTrue-compatible stub (see backend/scripts/dev_auth.py)
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: uvicorn backend.scripts.dev_auth:app --host 0.0.0.0 --port 9999
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/mentoros
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789abcdef}
+    ports: ["9999:9999"]
+    depends_on: { db: { condition: service_healthy } }
+
+  web:
+    build: { context: ./frontend }
+    environment:
+      VITE_SUPABASE_URL: http://localhost:9999
+      VITE_SUPABASE_ANON_KEY: dev-anon-key
+      VITE_API_PROXY: http://api:8000
+    ports: ["5173:5173"]
+    depends_on: [api]
 
 volumes:
   postgres_data:
