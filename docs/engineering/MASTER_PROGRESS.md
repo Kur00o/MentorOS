@@ -12,7 +12,7 @@ _Last updated: 23 Nov 2026 · owner: consolidation & deployment pass_
 | Demo accounts | ✅ student / mentor / HOD / admin `@mentoros.demo` (password shared privately) |
 | Tests | ✅ 75 backend (SQLite + Postgres), 5 frontend; Playwright walkthrough of every page for all roles on production |
 | CI | ✅ `.github/workflows/ci.yml` |
-| GitHub `main` | ✅ Consolidated history merged (see “Branch consolidation”) |
+| GitHub `main` | ⏳ PR [Kur00o/MentorOS#16](https://github.com/Kur00o/MentorOS/pull/16) open — `main` requires one approving review |
 
 ## Branch consolidation
 
@@ -24,7 +24,7 @@ Starting point: `main` held only the initial MVP and architecture (8 commits) an
 | `mentor-dashboard`, `feature/supabase-oauth` | Already contained in `development` | Preserved via `development` |
 | `feature/ai-companion` = `feature/ai-companion-frontend` = `testing` | Ollama + pgvector RAG companion, knowledge base, companion UI | Merged (commit `9d7eb43`), committed `__pycache__` removed; knowledge base and the RAG idea carried into the new companion |
 
-The consolidated work lives on branch `consolidation` and was merged into `main` with a merge commit (no force-push, no rewritten history).
+The consolidated work lives on branch `consolidation` (a descendant of both `main` and `development`). Direct pushes to `main` are blocked by the repository ruleset (PR + 1 approval), so it is delivered as PR #16, to be merged with a merge commit — no force-push, no rewritten history. Production is deployed from the PR head; after merging, `main`'s tree is identical to it.
 
 ## What was built
 
