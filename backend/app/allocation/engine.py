@@ -5,16 +5,16 @@ import heapq
 from typing import Any
 
 RISK_ORDER: dict[str, int] = {
-    "Coral": 0,
-    "Amber": 1,
-    "Green": 2,
-    "Insufficient": 3,
+    "coral": 0,
+    "amber": 1,
+    "insufficient_data": 2,
+    "green": 3,
 }
 
 
-def _student_sort_key(student: dict[str, Any]) -> tuple[int, int]:
+def _student_sort_key(student: dict[str, Any]) -> tuple:
     """Return a sort key that prioritises higher-risk students first."""
-    return (RISK_ORDER.get(student.get("risk_status", ""), 99), student["id"])
+    return (RISK_ORDER.get(student.get("risk_status", ""), 99), student.get("score") if student.get("score") is not None else 999, student["id"])
 
 
 def allocate(

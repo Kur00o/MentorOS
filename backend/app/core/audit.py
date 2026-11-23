@@ -1,34 +1,47 @@
+from __future__ import annotations
+
+import logging
 from typing import Any, Optional
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
-from backend.app.models.audit import AuditLog
+from backend.app.models import AuditLog
+
+log = logging.getLogger("mentoros.audit")
 
 
-def write_audit(
+def client_ip(request: Optional[Request]) -> Optional[str]:
+    if request is None:
+        return None
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def audit(
     db: Session,
     user_id: Optional[int],
     action: str,
     entity_type: Optional[str] = None,
-    entity_id: Optional[Any] = None,
-    ip_address: Optional[str] = None,
+    entity_id: Any = None,
     details: Optional[dict] = None,
+    request: Optional[Request] = None,
+    commit: bool = True,
 ) -> None:
-    """
-    Append an audit record. Used inside state-changing endpoints, which pass
-    their own request-scoped `db` session. Never raises — an audit failure
-    must not break the underlying action.
-    """
+    """Append an audit row (DPDP accountability). Never breaks the action."""
     try:
-        log = AuditLog(
+        db.add(AuditLog(
             user_id=user_id,
             action=action,
             entity_type=entity_type,
             entity_id=str(entity_id) if entity_id is not None else None,
-            ip_address=ip_address,
-            details=details,
-        )
-        db.add(log)
-        db.commit()
-    except Exception:
+            ip_address=client_ip(request),
+            details=details or {},
+        ))
+        if commit:
+            db.commit()
+    except Exception:  # pragma: no cover
+        log.exception("Failed to write audit log for %s", action)
         db.rollback()

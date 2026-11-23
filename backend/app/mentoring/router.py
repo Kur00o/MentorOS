@@ -1,704 +1,427 @@
-from typing import Any, List
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime, timedelta, timezone
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.core.audit import audit
 from backend.app.core.database import get_db
-from backend.app.core.audit import write_audit
-from backend.app.auth.router import get_current_user, require_role
-from backend.app.models.user import User
-from backend.app.models.student import Student
-from backend.app.models.mentor import Mentor
-from backend.app.models.meeting import Meeting, MeetingLog
-from backend.app.models.academic import StudentSuccessScore
-from backend.app.mentoring import schemas as mentoring_schemas
-from backend.app.students import schemas as student_schemas
+from backend.app.core.deps import Principal, can_access_student, get_accessible_student, get_principal, require_roles, scope_students
+from backend.app.core.errors import bad_request, conflict, forbidden, not_found
+from backend.app.integrations.messaging import notify, post_webhook
+from backend.app.models import Meeting, MeetingLog, Mentor, RiskAlert, Student, User
+from backend.app.students.service import alert_dict, list_rows, meeting_dict
 
 router = APIRouter()
+alerts_router = APIRouter()
+
+Mode = Literal["in_person", "video", "phone"]
 
 
-# ============================================
-# HELPER — Resolve mentor from current user
-# ============================================
-
-def _get_mentor_for_user(db: Session, current_user: User) -> Mentor:
-    """Get the Mentor record associated with the logged-in user."""
-    mentor = db.query(Mentor).filter(Mentor.user_id == current_user.id).first()
-    if not mentor:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No mentor profile found for current user"
-        )
-    return mentor
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-RISK_STATUS_TO_CATEGORY = {
-    "Green": "green",
-    "Amber": "amber",
-    "Coral": "coral",
-    "Insufficient": "insufficient_data",
-}
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _latest_score_rows(db: Session, student_ids: list) -> dict:
-    """Latest StudentSuccessScore per student, keyed by student_id."""
-    if not student_ids:
+class MeetingCreate(BaseModel):
+    student_id: Optional[int] = None  # students omit this (they request with their own mentor)
+    title: str = Field(min_length=3, max_length=200)
+    agenda: Optional[str] = Field(default=None, max_length=2000)
+    scheduled_at: datetime
+    duration_minutes: int = Field(default=30, ge=10, le=180)
+    mode: Mode = "in_person"
+    location: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _future(cls, v: datetime):
+        v = _aware(v)
+        if v < _now() - timedelta(minutes=5):
+            raise ValueError("Meetings must be scheduled in the future")
+        if v > _now() + timedelta(days=180):
+            raise ValueError("Meetings can be scheduled at most 6 months ahead")
+        return v
+
+
+class MeetingUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=3, max_length=200)
+    agenda: Optional[str] = Field(default=None, max_length=2000)
+    scheduled_at: Optional[datetime] = None
+    duration_minutes: Optional[int] = Field(default=None, ge=10, le=180)
+    mode: Optional[Mode] = None
+    location: Optional[str] = Field(default=None, max_length=200)
+    status: Optional[Literal["scheduled", "cancelled", "no_show"]] = None
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _future(cls, v):
+        if v is None:
+            return v
+        v = _aware(v)
+        if v < _now() - timedelta(minutes=5):
+            raise ValueError("Meetings must be scheduled in the future")
+        return v
+
+
+class ActionItemIn(BaseModel):
+    text: str = Field(min_length=2, max_length=300)
+    due: Optional[date] = None
+    owner: Literal["student", "mentor"] = "student"
+
+
+class MeetingLogIn(BaseModel):
+    summary: str = Field(min_length=10, max_length=4000)
+    topics: list[str] = Field(default_factory=list, max_length=12)
+    action_items: list[ActionItemIn] = Field(default_factory=list, max_length=15)
+    student_mood: Optional[Literal["thriving", "steady", "stressed", "struggling"]] = None
+    follow_up_on: Optional[date] = None
+    private_notes: Optional[str] = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def _follow_up(self):
+        if self.follow_up_on and self.follow_up_on < date.today():
+            raise ValueError("Follow-up date must be today or later")
+        return self
+
+
+class ActionToggle(BaseModel):
+    done: bool
+
+
+class AlertUpdate(BaseModel):
+    status: Literal["acknowledged", "resolved", "open"]
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+def _meeting_names(db: Session, meetings: list[Meeting]) -> dict:
+    if not meetings:
         return {}
-
-    rows = (
-        db.query(StudentSuccessScore)
-        .filter(StudentSuccessScore.student_id.in_(student_ids))
-        .order_by(StudentSuccessScore.student_id, StudentSuccessScore.computed_at.desc())
-        .all()
-    )
-    latest = {}
-    for row in rows:
-        latest.setdefault(row.student_id, row)
-    return latest
-
-
-def _resolve_score(student: Student, score_row) -> dict:
-    """
-    Work out what to show for a student's score.
-
-    The scoring engine's history row wins when it exists — it carries the four
-    components and the authoritative risk category. Otherwise we fall back to
-    the value mirrored onto `students` (see PRD 4.5), which has no component
-    breakdown. Either way, no score means `insufficient_data` — never 0.
-    """
-    if score_row is not None:
-        return {
-            "attendance_component": score_row.attendance_component,
-            "academic_component": score_row.academic_component,
-            "engagement_component": score_row.engagement_component,
-            "placement_component": score_row.placement_component,
-            "success_score": score_row.total_score,
-            "risk_status": (
-                score_row.risk_category
-                if score_row.total_score is not None
-                else "insufficient_data"
-            ),
-        }
-
-    risk = RISK_STATUS_TO_CATEGORY.get(student.risk_status or "", "insufficient_data")
+    sids = {m.student_id for m in meetings}
+    mids = {m.mentor_id for m in meetings}
+    students = {sid: (name, usn, band) for sid, name, usn, band in db.execute(
+        select(Student.id, User.full_name, Student.usn, Student.risk_category).join(User, User.id == Student.user_id).where(Student.id.in_(sids)))}
+    mentors = {mid: name for mid, name in db.execute(
+        select(Mentor.id, User.full_name).join(User, User.id == Mentor.user_id).where(Mentor.id.in_(mids)))}
     return {
-        "attendance_component": None,
-        "academic_component": None,
-        "engagement_component": None,
-        "placement_component": None,
-        "success_score": student.success_score,
-        "risk_status": risk if student.success_score is not None else "insufficient_data",
+        m.id: {
+            "student_name": students.get(m.student_id, ("", "", ""))[0],
+            "student_usn": students.get(m.student_id, ("", "", ""))[1],
+            "student_band": students.get(m.student_id, ("", "", ""))[2],
+            "mentor_name": mentors.get(m.mentor_id, ""),
+        }
+        for m in meetings
     }
 
 
-def _open_action_item_counts(db: Session, student_ids: list) -> dict:
-    """
-    Action items recorded against each student's meeting logs.
-
-    `MeetingLog.action_items` has no completion flag, so every recorded item
-    counts. Closing items isn't supported yet.
-    """
-    if not student_ids:
-        return {}
-
-    rows = (
-        db.query(Meeting.student_id, MeetingLog.action_items)
-        .join(MeetingLog, MeetingLog.meeting_id == Meeting.id)
-        .filter(Meeting.student_id.in_(student_ids))
-        .all()
-    )
-    counts = {}
-    for student_id, action_items in rows:
-        counts[student_id] = counts.get(student_id, 0) + len(action_items or [])
-    return counts
+def _serialize(db: Session, meetings: list[Meeting], p: Principal) -> list[dict]:
+    names = _meeting_names(db, meetings)
+    return [meeting_dict(m, include_private=p.is_staff(), names=names) for m in meetings]
 
 
-def _enrich_meeting(meeting: Meeting, db: Session) -> mentoring_schemas.MeetingResponse:
-    """Turn a Meeting ORM object into a MeetingResponse with student/mentor names."""
-    student = db.query(Student).filter(Student.id == meeting.student_id).first()
-    mentor = db.query(Mentor).filter(Mentor.id == meeting.mentor_id).first()
-
-    student_name = student.user.full_name if student and student.user else "Unknown"
-    mentor_name = mentor.user.full_name if mentor and mentor.user else "Unknown"
-
-    return mentoring_schemas.MeetingResponse(
-        id=meeting.id,
-        title=meeting.title,
-        date=meeting.date,
-        mode=meeting.mode,
-        notes=meeting.notes,
-        status=meeting.status,
-        mentor_id=meeting.mentor_id,
-        student_id=meeting.student_id,
-        student_name=student_name,
-        mentor_name=mentor_name,
-    )
+def _get_meeting(db: Session, p: Principal, meeting_id: int) -> Meeting:
+    m = db.get(Meeting, meeting_id)
+    if m is None:
+        raise not_found("Meeting")
+    st = db.get(Student, m.student_id)
+    if p.role == "mentor":
+        if m.mentor_id != p.mentor_id:
+            raise not_found("Meeting")
+    elif not can_access_student(p, st):
+        raise not_found("Meeting")
+    return m
 
 
-# ============================================
-# ROSTER ENDPOINTS
-# ============================================
+def _check_clash(db: Session, mentor_id: int, start: datetime, minutes: int, exclude: Optional[int] = None) -> None:
+    end = start + timedelta(minutes=minutes)
+    window = db.scalars(select(Meeting).where(
+        Meeting.mentor_id == mentor_id, Meeting.status.in_(("scheduled", "requested")),
+        Meeting.scheduled_at >= start - timedelta(hours=4), Meeting.scheduled_at <= end,
+    )).all()
+    for other in window:
+        if exclude and other.id == exclude:
+            continue
+        o_start = _aware(other.scheduled_at)
+        o_end = o_start + timedelta(minutes=other.duration_minutes)
+        if o_start < end and start < o_end:
+            raise conflict(f"Overlaps with “{other.title}” at {o_start.strftime('%d %b %H:%M UTC')}")
 
-@router.get("/roster", response_model=List[mentoring_schemas.MentorRosterItem])
-def get_mentor_roster(
+
+def _users_for(db: Session, m: Meeting) -> tuple[Optional[User], Optional[User]]:
+    st = db.get(Student, m.student_id)
+    mentor = db.get(Mentor, m.mentor_id)
+    return (st.user if st else None), (mentor.user if mentor else None)
+
+
+# ── meetings ───────────────────────────────────────────────────────────────
+@router.get("/meetings")
+def list_meetings(
+    status: Optional[str] = Query(default=None, pattern="^(requested|scheduled|completed|cancelled|no_show)(,(requested|scheduled|completed|cancelled|no_show))*$"),
+    student_id: Optional[int] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    p: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Get list of students assigned to the current mentor, enriched with
-    score data, risk status, and meeting context.
-    """
-    if current_user.role != "Mentor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mentors can access their roster"
-        )
-
-    mentor = _get_mentor_for_user(db, current_user)
-    students = db.query(Student).filter(Student.mentor_id == mentor.id).all()
-
-    student_ids = [s.id for s in students]
-    score_rows = _latest_score_rows(db, student_ids)
-    action_item_counts = _open_action_item_counts(db, student_ids)
-
-    now = datetime.utcnow()
-    roster_items = []
-
-    for student in students:
-        # Last completed meeting
-        last_meeting = (
-            db.query(Meeting)
-            .filter(
-                Meeting.mentor_id == mentor.id,
-                Meeting.student_id == student.id,
-                Meeting.status == "Completed",
-            )
-            .order_by(Meeting.date.desc())
-            .first()
-        )
-
-        # Next scheduled meeting
-        next_meeting = (
-            db.query(Meeting)
-            .filter(
-                Meeting.mentor_id == mentor.id,
-                Meeting.student_id == student.id,
-                Meeting.status == "Scheduled",
-                Meeting.date >= now,
-            )
-            .order_by(Meeting.date.asc())
-            .first()
-        )
-
-        roster_items.append(
-            mentoring_schemas.MentorRosterItem(
-                student_id=student.id,
-                usn=student.usn,
-                full_name=student.user.full_name if student.user else "Unknown",
-                email=student.user.email if student.user else "",
-                department=student.department,
-                semester=student.semester,
-                consent_given=student.consent_given,
-                last_meeting=_enrich_meeting(last_meeting, db) if last_meeting else None,
-                next_meeting=_enrich_meeting(next_meeting, db) if next_meeting else None,
-                open_action_items=action_item_counts.get(student.id, 0),
-                **_resolve_score(student, score_rows.get(student.id)),
-            )
-        )
-
-    # Lowest score first so the students who need attention lead the roster;
-    # unscored students sort last since we don't know where they belong.
-    roster_items.sort(
-        key=lambda item: (item.success_score is None, item.success_score or 0.0)
-    )
-    return roster_items
-
-
-# ============================================
-# ALLOCATION ENDPOINTS
-# ============================================
-
-@router.post("/allocate", response_model=mentoring_schemas.AllocationResponse)
-def allocate_student(
-    request: mentoring_schemas.AllocationRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Allocate a student to a mentor.
-    Enforces:
-      1. Department alignment (student.department == mentor.department)
-      2. Capacity limits (current mentees < mentor.max_mentees)
-    Only HOD and Admin can allocate.
-    """
-    if current_user.role not in ("HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD and Admin can allocate students"
-        )
-
-    student = db.query(Student).filter(Student.id == request.student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Student with id {request.student_id} not found"
-        )
-
-    mentor = db.query(Mentor).filter(Mentor.id == request.mentor_id).first()
-    if not mentor:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Mentor with id {request.mentor_id} not found"
-        )
-
-    # Rule 1: Department alignment
-    if student.department != mentor.department:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Department mismatch: student is in '{student.department}', mentor is in '{mentor.department}'. "
-                   f"Inter-departmental mentoring is not allowed."
-        )
-
-    # Rule 2: Capacity check
-    current_mentee_count = db.query(Student).filter(Student.mentor_id == mentor.id).count()
-    if current_mentee_count >= mentor.max_mentees:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Mentor has reached maximum capacity ({mentor.max_mentees} mentees). "
-                   f"Cannot allocate more students."
-        )
-
-    # Check if student is already allocated
-    if student.mentor_id is not None:
-        old_mentor = db.query(Mentor).filter(Mentor.id == student.mentor_id).first()
-        old_name = old_mentor.user.full_name if old_mentor and old_mentor.user else "Unknown"
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Student is already allocated to mentor '{old_name}' (id={student.mentor_id}). "
-                   f"Deallocate first before reassigning."
-        )
-
-    # Perform allocation
-    student.mentor_id = mentor.id
-    db.commit()
-    db.refresh(student)
-
-    # Write audit log
-    write_audit(
-        db,
-        current_user.id,
-        "allocate_student",
-        "student",
-        student.id,
-        details={"mentor_id": mentor.id},
-    )
-
-    return mentoring_schemas.AllocationResponse(
-        student_id=student.id,
-        mentor_id=mentor.id,
-        student_name=student.user.full_name if student.user else "Unknown",
-        mentor_name=mentor.user.full_name if mentor.user else "Unknown",
-        department=student.department,
-        message="Student successfully allocated to mentor",
-    )
-
-
-@router.delete("/allocate/{student_id}", response_model=mentoring_schemas.AllocationResponse)
-def deallocate_student(
-    student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Remove a student from their currently assigned mentor.
-    Only HOD and Admin can deallocate.
-    """
-    if current_user.role not in ("HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD and Admin can deallocate students"
-        )
-
-    student = db.query(Student).filter(Student.id == student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Student with id {student_id} not found"
-        )
-
-    if student.mentor_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Student is not currently allocated to any mentor"
-        )
-
-    old_mentor = db.query(Mentor).filter(Mentor.id == student.mentor_id).first()
-    old_mentor_name = old_mentor.user.full_name if old_mentor and old_mentor.user else "Unknown"
-
-    student.mentor_id = None
-    db.commit()
-    db.refresh(student)
-
-    return mentoring_schemas.AllocationResponse(
-        student_id=student.id,
-        mentor_id=old_mentor.id if old_mentor else 0,
-        student_name=student.user.full_name if student.user else "Unknown",
-        mentor_name=old_mentor_name,
-        department=student.department,
-        message="Student successfully deallocated from mentor",
-    )
-
-
-# ============================================
-# MEETING ENDPOINTS
-# ============================================
-
-@router.get("/meetings", response_model=List[mentoring_schemas.MeetingResponse])
-def get_meetings(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Get all meetings for the current mentor.
-    Students see their own meetings, mentors see their roster's meetings.
-    HODs and Admins see all meetings.
-    """
-    if current_user.role == "Mentor":
-        mentor = _get_mentor_for_user(db, current_user)
-        meetings = db.query(Meeting).filter(Meeting.mentor_id == mentor.id).order_by(Meeting.date.desc()).all()
-    elif current_user.role == "Student":
-        student = current_user.student_profile
-        if not student:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No student profile found")
-        meetings = db.query(Meeting).filter(Meeting.student_id == student.id).order_by(Meeting.date.desc()).all()
-    elif current_user.role in ("HOD", "Admin"):
-        meetings = db.query(Meeting).order_by(Meeting.date.desc()).all()
+):
+    stmt = select(Meeting).join(Student, Student.id == Meeting.student_id)
+    if p.role == "mentor":
+        stmt = stmt.where(Meeting.mentor_id == (p.mentor_id or -1))
     else:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+        stmt = scope_students(stmt, p)
+    if status:
+        stmt = stmt.where(Meeting.status.in_(status.split(",")))
+    if student_id:
+        stmt = stmt.where(Meeting.student_id == student_id)
+    if start:
+        stmt = stmt.where(Meeting.scheduled_at >= _aware(start))
+    if end:
+        stmt = stmt.where(Meeting.scheduled_at <= _aware(end))
+    meetings = db.scalars(stmt.order_by(Meeting.scheduled_at.desc()).limit(limit)).all()
+    return _serialize(db, meetings, p)
 
-    return [_enrich_meeting(m, db) for m in meetings]
 
-
-@router.post("/meetings", response_model=mentoring_schemas.MeetingResponse, status_code=status.HTTP_201_CREATED)
-def schedule_meeting(
-    meeting_data: mentoring_schemas.MeetingCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Schedule a new meeting with a student.
-    Mentors can only schedule meetings with their own mentees.
-    """
-    if current_user.role != "Mentor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mentors can schedule meetings"
-        )
-
-    mentor = _get_mentor_for_user(db, current_user)
-
-    # Verify the student is in this mentor's roster
-    student = db.query(Student).filter(
-        Student.id == meeting_data.student_id,
-        Student.mentor_id == mentor.id,
-    ).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Student is not in your roster. You can only schedule meetings with your own mentees."
-        )
-
-    new_meeting = Meeting(
-        mentor_id=mentor.id,
-        student_id=meeting_data.student_id,
-        title=meeting_data.title,
-        date=meeting_data.date,
-        mode=meeting_data.mode,
-        notes=meeting_data.notes,
-        status=meeting_data.status or "Scheduled",
+@router.post("/meetings", status_code=201)
+def create_meeting(body: MeetingCreate, request: Request, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    if p.role == "student":
+        st = db.get(Student, p.student_id)
+        if st is None or st.mentor_id is None:
+            raise bad_request("You don't have a mentor assigned yet — your HOD will allocate one soon.")
+        status, requested_by = "requested", "student"
+    else:
+        if body.student_id is None:
+            raise bad_request("student_id is required")
+        st = get_accessible_student(db, p, body.student_id)
+        if st.mentor_id is None:
+            raise bad_request("This student has no mentor yet. Allocate a mentor first.")
+        if p.role == "mentor" and st.mentor_id != p.mentor_id:
+            raise forbidden("You can only schedule meetings with your own mentees")
+        status, requested_by = "scheduled", ("mentor" if p.role == "mentor" else "hod")
+    _check_clash(db, st.mentor_id, body.scheduled_at, body.duration_minutes)
+    m = Meeting(
+        mentor_id=st.mentor_id, student_id=st.id, title=body.title.strip(), agenda=body.agenda, scheduled_at=body.scheduled_at,
+        duration_minutes=body.duration_minutes, mode=body.mode, location=body.location, status=status,
+        requested_by=requested_by, created_by=p.id, is_synthetic=False,
     )
-    db.add(new_meeting)
+    db.add(m)
+    db.flush()
+    student_user, mentor_user = _users_for(db, m)
+    when = _aware(m.scheduled_at).strftime("%a %d %b, %H:%M UTC")
+    if status == "requested":
+        notify(db, [mentor_user], kind="meeting_request", title=f"{student_user.full_name} requested a meeting",
+               body=f"“{m.title}” · {when}", link=f"/mentor/meetings?focus={m.id}", email=True)
+    else:
+        notify(db, [student_user], kind="meeting_scheduled", title="New mentoring session scheduled",
+               body=f"“{m.title}” · {when}", link=f"/student/meetings?focus={m.id}", email=True)
     db.commit()
-    db.refresh(new_meeting)
-
-    return _enrich_meeting(new_meeting, db)
-
-
-@router.get("/meetings/{meeting_id}", response_model=mentoring_schemas.MeetingResponse)
-def get_meeting(
-    meeting_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """Get a specific meeting by ID."""
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meeting with id {meeting_id} not found"
-        )
-
-    # Access control
-    if current_user.role == "Mentor":
-        mentor = _get_mentor_for_user(db, current_user)
-        if meeting.mentor_id != mentor.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your meeting")
-    elif current_user.role == "Student":
-        student = current_user.student_profile
-        if not student or meeting.student_id != student.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your meeting")
-
-    return _enrich_meeting(meeting, db)
+    audit(db, p.id, "meeting_create", "meeting", m.id, {"student_id": st.id, "status": status}, request)
+    return _serialize(db, [m], p)[0]
 
 
-@router.put("/meetings/{meeting_id}", response_model=mentoring_schemas.MeetingResponse)
-def update_meeting(
-    meeting_id: int,
-    update: mentoring_schemas.MeetingUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Update a meeting — add notes, change date/title, or mark as Completed/Cancelled.
-    Only the owning mentor can update.
-    """
-    if current_user.role != "Mentor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mentors can update meetings"
-        )
-
-    mentor = _get_mentor_for_user(db, current_user)
-    meeting = db.query(Meeting).filter(
-        Meeting.id == meeting_id,
-        Meeting.mentor_id == mentor.id,
-    ).first()
-
-    if not meeting:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meeting with id {meeting_id} not found or doesn't belong to you"
-        )
-
-    # Apply updates
-    if update.title is not None:
-        meeting.title = update.title
-    if update.date is not None:
-        meeting.date = update.date
-    if update.notes is not None:
-        meeting.notes = update.notes
-    if update.status is not None:
-        meeting.status = update.status
-
+@router.patch("/meetings/{meeting_id}")
+def update_meeting(meeting_id: int, body: MeetingUpdate, request: Request, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    m = _get_meeting(db, p, meeting_id)
+    data = body.model_dump(exclude_unset=True)
+    if m.status in ("completed", "cancelled"):
+        raise conflict(f"This meeting is already {m.status}")
+    if p.role == "student":
+        allowed = {"status"}
+        if set(data) - allowed or data.get("status") not in (None, "cancelled"):
+            raise forbidden("Students can only cancel their meetings")
+    if data.get("status") == "no_show" and p.role == "student":
+        raise forbidden("Only the mentor can mark a no-show")
+    if "scheduled_at" in data or "duration_minutes" in data:
+        _check_clash(db, m.mentor_id, data.get("scheduled_at", _aware(m.scheduled_at)), data.get("duration_minutes", m.duration_minutes), exclude=m.id)
+    previous = m.status
+    for k, v in data.items():
+        setattr(m, k, v)
+    if previous == "requested" and p.role in ("mentor", "hod", "admin") and data.get("status") in (None, "scheduled"):
+        m.status = "scheduled"
+    student_user, mentor_user = _users_for(db, m)
+    if m.status == "cancelled":
+        target = mentor_user if p.role == "student" else student_user
+        notify(db, [target], kind="meeting_cancelled", title=f"Meeting cancelled: {m.title}", link="/meetings")
+    elif previous == "requested" and m.status == "scheduled":
+        notify(db, [student_user], kind="meeting_confirmed", title=f"Your mentor confirmed “{m.title}”",
+               body=_aware(m.scheduled_at).strftime("%a %d %b, %H:%M UTC"), link=f"/student/meetings?focus={m.id}")
+    elif "scheduled_at" in data:
+        notify(db, [student_user if p.role != "student" else mentor_user], kind="meeting_rescheduled",
+               title=f"Meeting rescheduled: {m.title}", body=_aware(m.scheduled_at).strftime("%a %d %b, %H:%M UTC"), link="/meetings")
     db.commit()
-    db.refresh(meeting)
+    audit(db, p.id, "meeting_update", "meeting", m.id, {k: str(v) for k, v in data.items()}, request)
+    return _serialize(db, [m], p)[0]
 
-    return _enrich_meeting(meeting, db)
 
-
-@router.delete("/meetings/{meeting_id}")
-def delete_meeting(
-    meeting_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """Delete a meeting. Only the owning mentor can delete."""
-    if current_user.role != "Mentor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mentors can delete meetings"
-        )
-
-    mentor = _get_mentor_for_user(db, current_user)
-    meeting = db.query(Meeting).filter(
-        Meeting.id == meeting_id,
-        Meeting.mentor_id == mentor.id,
-    ).first()
-
-    if not meeting:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Meeting with id {meeting_id} not found or doesn't belong to you"
-        )
-
-    db.delete(meeting)
+@router.post("/meetings/{meeting_id}/log", status_code=201)
+def log_meeting(meeting_id: int, body: MeetingLogIn, request: Request, p: Principal = Depends(require_roles("mentor", "admin")), db: Session = Depends(get_db)):
+    m = _get_meeting(db, p, meeting_id)
+    if m.log is not None:
+        raise conflict("This meeting already has a log. Edit it instead.")
+    if m.status in ("cancelled", "requested"):
+        raise bad_request(f"A {m.status} meeting cannot be logged")
+    if _aware(m.scheduled_at) > _now() + timedelta(hours=1):
+        raise bad_request("You can log a meeting once it has started")
+    items = [{"id": uuid.uuid4().hex[:8], "text": a.text.strip(), "due": a.due.isoformat() if a.due else None, "owner": a.owner, "done": False}
+             for a in body.action_items]
+    m.log = MeetingLog(summary=body.summary.strip(), topics=[t.strip()[:40] for t in body.topics if t.strip()], action_items=items,
+                       student_mood=body.student_mood, follow_up_on=body.follow_up_on, private_notes=body.private_notes, logged_by=p.id)
+    m.status = "completed"
+    student_user, _ = _users_for(db, m)
+    notify(db, [student_user], kind="meeting_logged", title=f"Notes from “{m.title}” are ready",
+           body=f"{len(items)} action item{'s' if len(items) != 1 else ''} for you", link=f"/student/meetings?focus={m.id}")
+    # Resolve the "no recent meeting" alert immediately.
+    for a in db.scalars(select(RiskAlert).where(RiskAlert.student_id == m.student_id, RiskAlert.rule == "no_recent_meeting", RiskAlert.status != "resolved")):
+        a.status, a.resolved_at, a.resolved_by, a.resolution_note = "resolved", _now(), p.id, "Mentor meeting completed"
     db.commit()
+    audit(db, p.id, "meeting_log", "meeting", m.id, {"action_items": len(items)}, request)
+    return _serialize(db, [m], p)[0]
 
-    return {"message": f"Meeting {meeting_id} deleted successfully"}
 
-
-@router.post("/meetings/{meeting_id}/log", status_code=status.HTTP_201_CREATED)
-def log_meeting(
-    meeting_id: int,
-    payload: mentoring_schemas.MeetingLogCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("Mentor", "Admin")),
-) -> Any:
-    """
-    Record a structured log for a completed meeting (topics, action items,
-    next date, observations) and mark the meeting completed. Mentors may only
-    log their own meetings.
-    """
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found"
-        )
-
-    if current_user.role == "Mentor":
-        mentor = db.query(Mentor).filter(Mentor.user_id == current_user.id).first()
-        if not mentor or meeting.mentor_id != mentor.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot log another mentor's meeting",
-            )
-
-    if meeting.log:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This meeting has already been logged",
-        )
-
-    log = MeetingLog(
-        meeting_id=meeting.id,
-        topics_discussed=payload.topics_discussed,
-        action_items=payload.action_items,
-        next_meeting_date=payload.next_meeting_date,
-        observations=payload.observations,
-        logged_by=current_user.id,
-    )
-    meeting.status = "Completed"
-    db.add(log)
+@router.put("/meetings/{meeting_id}/log")
+def edit_meeting_log(meeting_id: int, body: MeetingLogIn, request: Request, p: Principal = Depends(require_roles("mentor", "admin")), db: Session = Depends(get_db)):
+    m = _get_meeting(db, p, meeting_id)
+    if m.log is None:
+        raise not_found("Meeting log")
+    done = {i.get("text"): i.get("done", False) for i in (m.log.action_items or [])}
+    m.log.summary = body.summary.strip()
+    m.log.topics = [t.strip()[:40] for t in body.topics if t.strip()]
+    m.log.action_items = [{"id": uuid.uuid4().hex[:8], "text": a.text.strip(), "due": a.due.isoformat() if a.due else None,
+                           "owner": a.owner, "done": done.get(a.text.strip(), False)} for a in body.action_items]
+    m.log.student_mood, m.log.follow_up_on, m.log.private_notes = body.student_mood, body.follow_up_on, body.private_notes
     db.commit()
-    db.refresh(log)
-
-    write_audit(db, current_user.id, "log_meeting", "meeting", meeting.id)
-
-    return {"message": "Meeting logged", "log_id": log.id}
+    audit(db, p.id, "meeting_log_edit", "meeting", m.id, request=request)
+    return _serialize(db, [m], p)[0]
 
 
-@router.get("/students/{student_id}/meetings")
-def get_student_meetings(
-    student_id: int,
+@router.patch("/meetings/{meeting_id}/actions/{action_id}")
+def toggle_action(meeting_id: int, action_id: str, body: ActionToggle, request: Request, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    m = _get_meeting(db, p, meeting_id)
+    if m.log is None:
+        raise not_found("Meeting log")
+    items = [dict(i) for i in (m.log.action_items or [])]
+    for item in items:
+        if item.get("id") == action_id:
+            item["done"] = body.done
+            item["done_at"] = _now().isoformat() if body.done else None
+            break
+    else:
+        raise not_found("Action item")
+    m.log.action_items = items  # reassign so JSON change is persisted
+    db.commit()
+    audit(db, p.id, "action_item_toggle", "meeting", m.id, {"action_id": action_id, "done": body.done}, request)
+    return {"ok": True, "action_items": items}
+
+
+# ── mentor dashboard ───────────────────────────────────────────────────────
+@router.get("/dashboard")
+def mentor_dashboard(p: Principal = Depends(require_roles("mentor")), db: Session = Depends(get_db)):
+    mentor = db.get(Mentor, p.mentor_id) if p.mentor_id else None
+    if mentor is None:
+        raise not_found("Mentor profile")
+    students = db.scalars(select(Student).where(Student.mentor_id == mentor.id)).all()
+    rows = list_rows(db, students)
+    now = _now()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    meetings = db.scalars(select(Meeting).where(Meeting.mentor_id == mentor.id)).all()
+    upcoming = sorted([m for m in meetings if m.status in ("scheduled", "requested") and _aware(m.scheduled_at) >= now - timedelta(hours=1)],
+                      key=lambda m: m.scheduled_at)[:12]
+    requests = [m for m in meetings if m.status == "requested"]
+    recent_logs = sorted([m for m in meetings if m.log is not None], key=lambda m: m.log.logged_at, reverse=True)[:6]
+    open_actions = sum(1 for m in meetings if m.log for a in (m.log.action_items or []) if not a.get("done"))
+    alerts = db.scalars(select(RiskAlert).join(Student, Student.id == RiskAlert.student_id)
+                        .where(Student.mentor_id == mentor.id, RiskAlert.status == "open")
+                        .order_by(RiskAlert.severity, RiskAlert.created_at.desc())).all()
+    sev_rank = {"high": 0, "medium": 1, "low": 2}
+    alerts = sorted(alerts, key=lambda a: (sev_rank.get(a.severity, 3), -(a.created_at.timestamp() if a.created_at else 0)))
+
+    def priority(r):
+        band_rank = {"coral": 0, "amber": 1, "insufficient_data": 2, "green": 3}[r["band"]]
+        return (-r["high_alerts"], band_rank, r["delta"] or 0, r["score"] or 0)
+
+    attention = sorted([r for r in rows if r["band"] in ("coral", "amber") or r["high_alerts"]], key=priority)[:8]
+    bands = {b: sum(1 for r in rows if r["band"] == b) for b in ("green", "amber", "coral", "insufficient_data")}
+    scored = [r["score"] for r in rows if r["score"] is not None]
+    completed_month = sum(1 for m in meetings if m.status == "completed" and _aware(m.scheduled_at) >= month_start)
+    covered = {m.student_id for m in meetings if m.status == "completed" and _aware(m.scheduled_at) >= now - timedelta(days=45)}
+    return {
+        "mentor": {"id": mentor.id, "name": p.user.full_name, "designation": mentor.designation, "department": mentor.department.code,
+                   "max_mentees": mentor.max_mentees, "specialization": mentor.specialization},
+        "kpis": {
+            "mentees": len(rows), "capacity": mentor.max_mentees, "avg_score": round(sum(scored) / len(scored), 1) if scored else None,
+            "bands": bands, "open_alerts": len(alerts), "high_alerts": sum(1 for a in alerts if a.severity == "high"),
+            "meetings_this_month": completed_month, "pending_requests": len(requests), "open_action_items": open_actions,
+            "coverage_45d": round(len(covered) / len(rows) * 100) if rows else 0,
+        },
+        "attention": attention,
+        "roster": rows,
+        "upcoming": _serialize(db, upcoming, p),
+        "recent_logs": _serialize(db, recent_logs, p),
+        "alerts": [dict(alert_dict(a), student_name=next((r["name"] for r in rows if r["id"] == a.student_id), "")) for a in alerts[:20]],
+    }
+
+
+# ── alerts ─────────────────────────────────────────────────────────────────
+@alerts_router.get("")
+def list_alerts(
+    status: Literal["open", "acknowledged", "resolved", "active", "all"] = "active",
+    severity: Optional[Literal["high", "medium", "low"]] = None,
+    student_id: Optional[int] = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    p: Principal = Depends(require_roles("mentor", "hod", "admin")),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Return a student's meetings (newest first) with their structured logs.
-    Students may only view their own meetings.
-    """
-    student = db.query(Student).filter(Student.id == student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Student not found"
-        )
-
-    if current_user.role == "Student" and student.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot view another student's meetings",
-        )
-
-    if current_user.role == "Mentor":
-        mentor = _get_mentor_for_user(db, current_user)
-        if student.mentor_id != mentor.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Student is not in your roster",
-            )
-
-    meetings = (
-        db.query(Meeting)
-        .filter(Meeting.student_id == student_id)
-        .order_by(Meeting.date.desc())
-        .all()
-    )
-
-    return [
-        {
-            "id": m.id,
-            "student_id": m.student_id,
-            "mentor_id": m.mentor_id,
-            "title": m.title,
-            "date": m.date.isoformat() if m.date else None,
-            "mode": m.mode,
-            "status": m.status,
-            "log": (
-                {
-                    "topics_discussed": m.log.topics_discussed,
-                    "action_items": m.log.action_items,
-                    "next_meeting_date": (
-                        m.log.next_meeting_date.isoformat()
-                        if m.log.next_meeting_date
-                        else None
-                    ),
-                    "observations": m.log.observations,
-                    "logged_at": m.log.logged_at.isoformat() if m.log.logged_at else None,
-                }
-                if m.log
-                else None
-            ),
-        }
-        for m in meetings
-    ]
+):
+    stmt = scope_students(select(RiskAlert, Student, User).join(Student, Student.id == RiskAlert.student_id).join(User, User.id == Student.user_id), p)
+    if status == "active":
+        stmt = stmt.where(RiskAlert.status != "resolved")
+    elif status != "all":
+        stmt = stmt.where(RiskAlert.status == status)
+    if severity:
+        stmt = stmt.where(RiskAlert.severity == severity)
+    if student_id:
+        stmt = stmt.where(RiskAlert.student_id == student_id)
+    rows = db.execute(stmt.order_by(RiskAlert.created_at.desc()).limit(limit)).all()
+    sev = {"high": 0, "medium": 1, "low": 2}
+    out = [dict(alert_dict(a), student_name=u.full_name, student_usn=s.usn, student_band=s.risk_category, student_score=s.success_score)
+           for a, s, u in rows]
+    out.sort(key=lambda a: (a["status"] == "resolved", sev.get(a["severity"], 3)))
+    return out
 
 
-# ============================================
-# MENTOR DASHBOARD
-# ============================================
+@alerts_router.patch("/{alert_id}")
+def update_alert(alert_id: int, body: AlertUpdate, request: Request, p: Principal = Depends(require_roles("mentor", "hod", "admin")), db: Session = Depends(get_db)):
+    a = db.get(RiskAlert, alert_id)
+    if a is None:
+        raise not_found("Alert")
+    get_accessible_student(db, p, a.student_id)
+    a.status = body.status
+    if body.status == "resolved":
+        a.resolved_at, a.resolved_by, a.resolution_note = _now(), p.id, body.note or "Resolved by staff"
+    elif body.status == "open":
+        a.resolved_at = a.resolved_by = None
+    if body.note and body.status != "resolved":
+        a.resolution_note = body.note
+    db.commit()
+    audit(db, p.id, "alert_update", "risk_alert", a.id, body.model_dump(), request)
+    return alert_dict(a)
 
-@router.get("/dashboard", response_model=mentoring_schemas.MentorDashboardStats)
-def get_mentor_dashboard(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Get aggregated dashboard statistics for the current mentor:
-    - Total mentees count
-    - At-risk / needs-attention / on-track counts
-    - Upcoming and completed meeting counts
-    - Average success score
-    """
-    if current_user.role != "Mentor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mentors can access their dashboard"
-        )
 
-    mentor = _get_mentor_for_user(db, current_user)
-    students = db.query(Student).filter(Student.mentor_id == mentor.id).all()
+def broadcast_high_alerts(db: Session, alerts: list[RiskAlert]) -> None:
+    """Notify the student's mentor (and webhook) about new high-severity alerts."""
+    for a in alerts:
+        if a.severity != "high":
+            continue
+        st = db.get(Student, a.student_id)
+        if st and st.mentor_id:
+            mentor = db.get(Mentor, st.mentor_id)
+            notify(db, [mentor.user], kind="risk_alert", title=f"High risk: {st.user.full_name}", body=a.detail,
+                   link=f"/mentor/students/{st.id}")
+        post_webhook(f"MentorOS high-risk alert · {st.usn if st else a.student_id}: {a.title}")
 
-    # Resolved the same way as the roster so the tiles and the table agree.
-    score_rows = _latest_score_rows(db, [s.id for s in students])
-    resolved = [_resolve_score(s, score_rows.get(s.id)) for s in students]
-
-    at_risk = sum(1 for r in resolved if r["risk_status"] == "coral")
-    needs_attention = sum(1 for r in resolved if r["risk_status"] == "amber")
-    on_track = sum(1 for r in resolved if r["risk_status"] == "green")
-
-    now = datetime.utcnow()
-    upcoming = db.query(Meeting).filter(
-        Meeting.mentor_id == mentor.id,
-        Meeting.status == "Scheduled",
-        Meeting.date >= now,
-    ).count()
-
-    completed = db.query(Meeting).filter(
-        Meeting.mentor_id == mentor.id,
-        Meeting.status == "Completed",
-    ).count()
-
-    # Unscored students are left out rather than counted as zero, which would
-    # drag the average down and misrepresent the cohort.
-    scored = [r["success_score"] for r in resolved if r["success_score"] is not None]
-    avg_score = sum(scored) / len(scored) if scored else 0.0
-
-    return mentoring_schemas.MentorDashboardStats(
-        total_mentees=len(students),
-        at_risk_count=at_risk,
-        needs_attention_count=needs_attention,
-        on_track_count=on_track,
-        upcoming_meetings=upcoming,
-        completed_meetings=completed,
-        avg_success_score=round(avg_score, 2),
-    )

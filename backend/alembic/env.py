@@ -1,86 +1,57 @@
+"""Alembic environment.
+
+Migrations are the single source of truth for the hosted Supabase schema.
+They run against the direct (non-pooled) connection when available, under a
+Postgres advisory lock so concurrent deploys cannot race each other.
+"""
 import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
 from alembic import context
+from sqlalchemy import create_engine, pool, text
 
-# Adjust path to import backend app modules
-# Add project root so both backend.app.* and app.* imports resolve correctly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from backend.app.core.config import settings
-from backend.app.core.database import Base
-# Import all models to ensure they are loaded on metadata before migration
-from backend.app.models.user import User
-from backend.app.models.student import Student
-from backend.app.models.mentor import Mentor
-from backend.app.models.meeting import Meeting, MeetingLog
-from backend.app.models.consent import StudentConsent
-from backend.app.models.audit import AuditLog
-from backend.app.models.academic import (
-    Subject,
-    AttendanceRecord,
-    LmsActivityRecord,
-    PlacementProfile,
-    StudentSuccessScore,
-)
+from backend.app.core.config import settings  # noqa: E402
+from backend.app.models import Base  # noqa: E402  (imports every model)
 
 config = context.config
-
-# Overwrite DATABASE_URL in config from settings,
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name is not None and not config.attributes.get("skip_logging"):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
+LOCK_ID = 774202611  # arbitrary, stable
+
+
+def _url() -> str:
+    return os.environ.get("ALEMBIC_DATABASE_URL") or settings.database_url(direct=True)
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(
-        url=url,
-        target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
-    )
-
+    context.configure(url=_url(), target_metadata=target_metadata, literal_binds=True, compare_type=True,
+                      dialect_opts={"paramstyle": "named"})
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
+    url = _url()
+    connectable = create_engine(url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+        is_pg = connection.dialect.name == "postgresql"
+        if is_pg:
+            connection.execute(text("select pg_advisory_lock(:id)"), {"id": LOCK_ID})
+            connection.commit()
+        try:
+            context.configure(connection=connection, target_metadata=target_metadata, compare_type=True,
+                              render_as_batch=connection.dialect.name == "sqlite")
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            if is_pg:
+                connection.execute(text("select pg_advisory_unlock(:id)"), {"id": LOCK_ID})
+                connection.commit()
 
 
 if context.is_offline_mode():

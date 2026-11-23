@@ -1,277 +1,62 @@
-from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from backend.app.core.database import get_db
-from backend.app.core.config import settings
-from backend.app.auth.router import get_current_user
-from backend.app.models.user import User
-from backend.app.models.student import Student
-from backend.app.scoring import schemas
-from backend.app.scoring.engine import ScoringEngine, recompute_and_store
+from backend.app.core.deps import Principal, get_accessible_student, get_principal
+from backend.app.scoring import engine, formula
 
 router = APIRouter()
 
 
-# ============================================
-# CORE FORMULA — Success Score Engine
-# ============================================
-
-def compute_success_score(attendance: float, academic: float, engagement: float, placement: float) -> float:
-    """
-    Computes the Success Score:
-    score = 0.35 * attendance + 0.35 * academic + 0.15 * engagement + 0.15 * placement
-    """
-    return round((0.35 * attendance) + (0.35 * academic) + (0.15 * engagement) + (0.15 * placement), 2)
+class SimulateIn(BaseModel):
+    attendance: Optional[float] = Field(default=None, ge=0, le=100)
+    sgpa: Optional[float] = Field(default=None, ge=0, le=10)
+    engagement: Optional[float] = Field(default=None, ge=0, le=100)
+    has_resume: Optional[bool] = None
+    skills: Optional[int] = Field(default=None, ge=0, le=50)
+    certifications: Optional[int] = Field(default=None, ge=0, le=50)
 
 
-def get_risk_band(score: float) -> str:
-    """
-    Risk bands:
-    - Green: 70 and above
-    - Amber: 50 to 69
-    - Coral: below 50
-    """
-    if score >= 70.0:
-        return "Green"
-    elif score >= 50.0:
-        return "Amber"
-    else:
-        return "Coral"
+@router.get("/formula")
+def get_formula():
+    """Public description of the score so every client explains it identically."""
+    return {
+        "weights": formula.WEIGHTS,
+        "bands": {"green": formula.GREEN_MIN, "amber": formula.AMBER_MIN},
+        "attendance_requirement": formula.ATTENDANCE_REQUIREMENT,
+        "placement": {"resume": formula.PLACEMENT_RESUME_POINTS, "per_skill": formula.PLACEMENT_SKILL_POINTS,
+                      "per_certification": formula.PLACEMENT_CERT_POINTS, "max_items": formula.PLACEMENT_CAP_ITEMS},
+    }
 
 
-def _build_breakdown(student: Student) -> schemas.SuccessScoreBreakdown:
-    """Helper to build a SuccessScoreBreakdown from a Student ORM object."""
-    attendance = student.attendance_rate or 0.0
-    academic = min((student.cgpa or 0.0) * 10.0, 100.0)  # CGPA (0-10) -> 0-100
-    engagement = getattr(student, "engagement_score", 70.0) or 70.0
-    placement = getattr(student, "placement_score", 70.0) or 70.0
+@router.get("/students/{student_id}")
+def live_score(student_id: int, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """Read-only live computation from source tables (does not persist)."""
+    st = get_accessible_student(db, p, student_id)
+    res = engine.compute_scores(db, [st.id])[st.id]
+    return {"student_id": st.id, "usn": st.usn, **res.as_dict()}
 
-    overall = compute_success_score(attendance, academic, engagement, placement)
-    band = get_risk_band(overall)
 
-    return schemas.SuccessScoreBreakdown(
-        student_id=student.id,
-        usn=student.usn,
-        full_name=student.user.full_name if student.user else "Unknown",
-        overall_score=overall,
-        risk_band=band,
-        components=schemas.ScoreComponents(
-            attendance_score=round(attendance, 2),
-            academic_score=round(academic, 2),
-            engagement_score=round(engagement, 2),
-            placement_score=round(placement, 2),
-        ),
+@router.post("/students/{student_id}/simulate")
+def simulate(student_id: int, body: SimulateIn, p: Principal = Depends(get_principal), db: Session = Depends(get_db)):
+    """What-if: override any inputs and see the resulting score and band,
+    computed by the same formula as the real score."""
+    st = get_accessible_student(db, p, student_id)
+    sig = engine.gather_signals(db, [st.id])[st.id]
+    current = sig.score()
+    att = body.attendance if body.attendance is not None else current.attendance_component
+    acad = formula.academic_component(body.sgpa) if body.sgpa is not None else current.academic_component
+    eng = body.engagement if body.engagement is not None else current.engagement_component
+    place = formula.placement_component(
+        body.has_resume if body.has_resume is not None else sig.has_resume,
+        body.skills if body.skills is not None else sig.skills_count,
+        body.certifications if body.certifications is not None else sig.certifications_count,
     )
-
-
-# ============================================
-# ENDPOINTS
-# ============================================
-
-@router.get("/", response_model=List[schemas.SuccessScoreBreakdown])
-def get_all_scores(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    List all student scores with breakdown and risk bands.
-    Accessible to Mentors, HODs, and Admins.
-    """
-    if current_user.role not in ("Mentor", "HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions"
-        )
-
-    students = db.query(Student).all()
-    return [_build_breakdown(s) for s in students]
-
-
-@router.get("/risk-summary", response_model=schemas.RiskBandSummary)
-def get_risk_summary(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Aggregate risk band counts across all students.
-    Returns { green, amber, coral, total }.
-    """
-    if current_user.role not in ("Mentor", "HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions"
-        )
-
-    students = db.query(Student).all()
-    green = amber = coral = 0
-    for s in students:
-        breakdown = _build_breakdown(s)
-        if breakdown.risk_band == "Green":
-            green += 1
-        elif breakdown.risk_band == "Amber":
-            amber += 1
-        else:
-            coral += 1
-
-    return schemas.RiskBandSummary(
-        green=green, amber=amber, coral=coral, total=len(students)
-    )
-
-
-@router.get("/department-risk", response_model=List[schemas.DepartmentRiskSummary])
-def get_department_risk(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Risk breakdown per department. Useful for the HOD heatmap view.
-    """
-    if current_user.role not in ("HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD and Admin can view department-level risk data"
-        )
-
-    students = db.query(Student).all()
-    dept_map: dict = {}
-    for s in students:
-        dept = s.department
-        if dept not in dept_map:
-            dept_map[dept] = {"green": 0, "amber": 0, "coral": 0, "total": 0}
-        breakdown = _build_breakdown(s)
-        dept_map[dept]["total"] += 1
-        if breakdown.risk_band == "Green":
-            dept_map[dept]["green"] += 1
-        elif breakdown.risk_band == "Amber":
-            dept_map[dept]["amber"] += 1
-        else:
-            dept_map[dept]["coral"] += 1
-
-    return [
-        schemas.DepartmentRiskSummary(department=dept, **counts)
-        for dept, counts in dept_map.items()
-    ]
-
-
-@router.get("/{student_id}", response_model=schemas.SuccessScoreBreakdown)
-def get_student_score(
-    student_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Fetch the real (Phase-3, SGPA-variant) success score breakdown for a student.
-    Students can fetch their own; Mentors/HODs/Admins can query any student.
-
-    Read-only: this computes the breakdown from source tables and does NOT
-    persist anything (persistence happens via the nightly job / recompute).
-    """
-    student = db.query(Student).filter(Student.id == student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Student not found"
-        )
-
-    # RBAC check: Student can only view their own
-    if current_user.role == "Student" and student.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view your own success score breakdown"
-        )
-
-    data = ScoringEngine(db).compute_success_score(student_id, settings.SCORING_PERIOD)
-    return {**data, "usn": student.usn}
-
-
-@router.put("/{student_id}", response_model=schemas.SuccessScoreBreakdown)
-def update_student_score(
-    student_id: int,
-    update: schemas.ScoreUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Update individual metric values for a student and recompute their score.
-    Only Mentors, HODs, and Admins can update scores.
-    """
-    if current_user.role not in ("Mentor", "HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions"
-        )
-
-    student = db.query(Student).filter(Student.id == student_id).first()
-    if not student:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Student with id {student_id} not found"
-        )
-
-    # Update individual metrics
-    if update.attendance_score is not None:
-        student.attendance_rate = update.attendance_score
-    if update.academic_score is not None:
-        student.cgpa = update.academic_score / 10.0  # Convert back to CGPA scale
-
-    # Recompute overall score and risk band
-    breakdown = _build_breakdown(student)
-    student.success_score = breakdown.overall_score
-    student.risk_status = breakdown.risk_band
-
-    db.commit()
-    db.refresh(student)
-
-    return _build_breakdown(student)
-
-
-@router.post("/compute-all", response_model=schemas.BatchComputeResponse)
-def compute_all_scores(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    """
-    Batch recompute success scores for all students.
-    Updates success_score and risk_status fields in the database.
-    Only HOD and Admin can trigger batch computation.
-    """
-    if current_user.role not in ("HOD", "Admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD and Admin can trigger batch score computation"
-        )
-
-    count = recompute_and_store(db, settings.SCORING_PERIOD)
-    students = db.query(Student).all()
-    green = sum(1 for s in students if s.risk_status == "Green")
-    amber = sum(1 for s in students if s.risk_status == "Amber")
-    coral = sum(1 for s in students if s.risk_status == "Coral")
-
-    return schemas.BatchComputeResponse(
-        updated_count=count,
-        risk_summary=schemas.RiskBandSummary(
-            green=green, amber=amber, coral=coral, total=len(students)
-        ),
-    )
-
-
-@router.post("/batch-recalculate", status_code=status.HTTP_200_OK)
-def run_batch_recalculation(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-) -> Any:
-    """
-    Recalculate + persist real success scores for all students (HOD / Admin).
-    Uses the Phase-3 engine and writes history rows + mirrors to the students
-    table — the same path as POST /admin/scores/recompute.
-    """
-    if current_user.role not in ["HOD", "Admin"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HOD or Admin can trigger success score batch jobs"
-        )
-
-    count = recompute_and_store(db, settings.SCORING_PERIOD)
-    return {"message": f"Successfully ran batch job. Recalculated scores for {count} students."}
+    sim = formula.compose(att, acad, eng, place)
+    return {"current": current.as_dict(), "simulated": sim.as_dict(),
+            "delta": round((sim.total_score or 0) - (current.total_score or 0), 2) if sim.total_score is not None and current.total_score is not None else None}
