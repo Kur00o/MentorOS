@@ -1,99 +1,41 @@
-version: "3.8"
-
+# Local full stack: Postgres + API + web + dev auth stub.
+#   docker compose up --build
+#   docker compose exec api python -m backend.scripts.seed   # synthetic demo data
 services:
   db:
-    image: pgvector/pgvector:pg15  # ← changed from postgres:15-alpine
-    container_name: mentoros_db
-    restart: always
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: mentoros }
+    ports: ["5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 5s, retries: 10 }
+
+  api:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    env_file: [.env]
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mentoros
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql  # ← added
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/mentoros
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789abcdef}
+    ports: ["8000:8000"]
+    depends_on: { db: { condition: service_healthy } }
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mentoros_backend
-    restart: always
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes:
-      - ./backend:/app
-    ports:
-      - "8000:8000"
+  auth:  # dev-only GoTrue-compatible stub (see backend/scripts/dev_auth.py)
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: uvicorn backend.scripts.dev_auth:app --host 0.0.0.0 --port 9999
+    env_file: [.env]
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/mentoros
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    depends_on:
-      - db
-      - redis
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/mentoros
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789abcdef}
+    ports: ["9999:9999"]
+    depends_on: { db: { condition: service_healthy } }
 
-  redis:
-    image: redis:7-alpine
-    container_name: mentoros_redis
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
-  # Phase 3 nightly scoring. Command mirrors the backend service's module
-  # convention; not validated in CI (no broker available locally).
-  celery-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mentoros_celery_worker
-    restart: always
-    command: celery -A app.scoring.tasks worker -l info
-    volumes:
-      - ./backend:/app
+  web:
+    build: { context: ./frontend }
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/mentoros
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    depends_on:
-      - db
-      - redis
-
-  celery-beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mentoros_celery_beat
-    restart: always
-    command: celery -A app.scoring.tasks beat -l info
-    volumes:
-      - ./backend:/app
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/mentoros
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    depends_on:
-      - db
-      - redis
-      - celery-worker
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: mentoros_frontend
-    restart: always
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
+      VITE_SUPABASE_URL: http://localhost:9999
+      VITE_SUPABASE_ANON_KEY: dev-anon-key
+      VITE_API_PROXY: http://api:8000
+    ports: ["5173:5173"]
+    depends_on: [api]
 
 volumes:
   postgres_data:
-  redis_data:

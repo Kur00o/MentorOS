@@ -66,6 +66,9 @@ Thumbs.db
 *.sln
 *.sw?
 CLAUDE.md
-docs/
+# Local-only material under docs/ stays ignored; project documentation is tracked.
+docs/*
+!docs/*.md
+!docs/engineering/
 PDFs/
 .vercel

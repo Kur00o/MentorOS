@@ -12,7 +12,7 @@ import { BarList, Gauge, SignalTrace, WeekStrip } from "@/ui/charts";
 export function ScoreGaugeSheet({ ov, compact }: { ov: Overview; compact?: boolean }) {
   const s = ov.score;
   return (
-    <Sheet tone="stack" className="flex flex-col" label={`Success score · ${ov.period}`} action={<BandChip band={s.band} />}>
+    <Sheet tone="stack" className="flex flex-col" label={`Score · ${ov.period}`} action={<BandChip band={s.band} />}>
       <Gauge value={s.total} band={s.band} size={compact ? 240 : 280} label={s.total == null ? "Awaiting data" : BAND[s.band].label}
         sub={s.total == null ? "Attendance or results not imported yet" : <span className="inline-flex items-center gap-1.5"><Delta value={s.delta} /> since last computation · {relative(s.updated_at)}</span>} />
       <p className="mt-4 border-t border-rule/10 pt-4 text-center text-[13px] text-graphite">{BAND[s.band].guide}</p>
@@ -219,7 +219,7 @@ export function WhatIf({ ov }: { ov: Overview }) {
   }, [body, ov.profile.id]);
   const band = (result?.band ?? ov.score.band) as keyof typeof BAND;
   return (
-    <Sheet label="What-if" title="Move the dials, see the score" tone="ruled">
+    <Sheet label="What-if" title="Move the dials, see the score">
       <div className="grid gap-6 md:grid-cols-[1fr_200px]">
         <div className="space-y-4">
           <Slider label="Attendance" value={att} set={setAtt} min={0} max={100} fmt={(v) => `${v}%`} />

@@ -25,13 +25,20 @@ Where:
 - *Example*: 92% attendance yields a score of `92.0`.
 
 ### Academic ($G$)
-- CGPA (traditionally on a 10.0 scale) is mapped linearly to a 100-point scale:
-  $$G = \text{Min}(\text{CGPA} \times 10.0, 100.0)$$
-- *Example*: A CGPA of 8.2 yields a score of `82.0`. A CGPA of 9.7 yields `97.0`.
+- The **latest declared SGPA** (10-point scale) is mapped linearly to a 100-point scale (Phase-3 DECISION-1):
+  $$G = \text{Min}(\text{SGPA} \times 10.0, 100.0)$$
+- *Example*: An SGPA of 8.2 yields `82.0`. Students without a declared SGPA (first semester) are `insufficient_data`.
 
-### Engagement ($E$) and Placement ($P$)
-- These are managed as composite metrics representing platform activities.
-- Default baseline score for active students starts at `75.0` (Engagement) and `80.0` (Placement) until detailed activity logs modify them.
+### Engagement ($E$)
+- Mean of (LMS logins ÷ department average for the term × 100, capped at 100) and (assignments submitted ÷ assigned × 100). No LMS activity counts as 0.
+
+### Placement ($P$)
+- Resume uploaded = 40, plus 8 per listed skill (max 5) and 4 per certification (max 5), capped at 100. No profile = 0.
+
+### Missing data
+- If Attendance **or** Academic has no source data the score is `null` and the band is `insufficient_data` — never a misleading number.
+
+> Implementation: `backend/app/scoring/formula.py` (single source of truth, unit-tested).
 
 ---
 

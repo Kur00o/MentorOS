@@ -209,7 +209,7 @@ def create_meeting(body: MeetingCreate, request: Request, p: Principal = Depends
     m = Meeting(
         mentor_id=st.mentor_id, student_id=st.id, title=body.title.strip(), agenda=body.agenda, scheduled_at=body.scheduled_at,
         duration_minutes=body.duration_minutes, mode=body.mode, location=body.location, status=status,
-        requested_by=requested_by, created_by=p.id, is_synthetic=False,
+        requested_by=requested_by, created_by=p.id, is_synthetic=st.is_synthetic, batch_id=st.batch_id,
     )
     db.add(m)
     db.flush()
@@ -271,7 +271,7 @@ def log_meeting(meeting_id: int, body: MeetingLogIn, request: Request, p: Princi
         raise bad_request("You can log a meeting once it has started")
     items = [{"id": uuid.uuid4().hex[:8], "text": a.text.strip(), "due": a.due.isoformat() if a.due else None, "owner": a.owner, "done": False}
              for a in body.action_items]
-    m.log = MeetingLog(summary=body.summary.strip(), topics=[t.strip()[:40] for t in body.topics if t.strip()], action_items=items,
+    m.log = MeetingLog(is_synthetic=m.is_synthetic, batch_id=m.batch_id, summary=body.summary.strip(), topics=[t.strip()[:40] for t in body.topics if t.strip()], action_items=items,
                        student_mood=body.student_mood, follow_up_on=body.follow_up_on, private_notes=body.private_notes, logged_by=p.id)
     m.status = "completed"
     student_user, _ = _users_for(db, m)
